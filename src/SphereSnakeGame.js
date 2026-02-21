@@ -174,7 +174,7 @@ class SphereSnakeGame {
       return;
     }
 
-    if (!this.isMobile || buttons.length === 0) {
+    if (buttons.length === 0) {
       this.mobileMenuControlsEl.innerHTML = "";
       this.mobileMenuControlsEl.style.display = "none";
       return;
@@ -310,12 +310,19 @@ class SphereSnakeGame {
         dashCooldown: this.config.dashCooldown,
         dashRequested: false,
         dashFlashTimer: 0,
-        eyesCrossed: false,
         eyeTime: Math.random() * Math.PI * 2,
         blinkTimer: 1.2 + Math.random() * 2.2,
         blinkProgress: 0,
         blinkDuration: 0.1,
         blinkPendingSecond: false,
+        deathEyeWobbleActive: false,
+        deathEyeWobbleTime: 0,
+        deathEyeWobbleDuration: 0.62,
+        deathEyeWobblePhase: Math.random() * Math.PI * 2,
+        deathEyeFreezeLeftX: 0,
+        deathEyeFreezeLeftY: 0,
+        deathEyeFreezeRightX: 0,
+        deathEyeFreezeRightY: 0,
         deathCameraTime: 0,
         deathCameraDir: Math.random() < 0.5 ? -1 : 1,
         pos: new THREE.Vector3(),
@@ -325,6 +332,7 @@ class SphereSnakeGame {
       });
 
       this.attachGooglyEyes(this.players[this.players.length - 1]);
+      this.configureHeadRenderPriority(this.players[this.players.length - 1]);
     }
 
     this.resetRound();
@@ -361,12 +369,14 @@ class SphereSnakeGame {
     player.dashCooldown = this.config.dashCooldown;
     player.dashRequested = false;
     player.dashFlashTimer = 0;
-    player.eyesCrossed = false;
     player.eyeTime = Math.random() * Math.PI * 2;
     player.blinkTimer = 1.2 + Math.random() * 2.2;
     player.blinkProgress = 0;
     player.blinkDuration = 0.1;
     player.blinkPendingSecond = false;
+    player.deathEyeWobbleActive = false;
+    player.deathEyeWobbleTime = 0;
+    player.deathEyeWobblePhase = Math.random() * Math.PI * 2;
     player.deathCameraTime = 0;
     player.deathCameraDir = Math.random() < 0.5 ? -1 : 1;
     this.updateHeadVisuals(player, 0);
@@ -392,13 +402,13 @@ class SphereSnakeGame {
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
       const maxHumans = this.isMobile ? 2 : 4;
-      this.subtitle.textContent = `Players: ${this.menu.humans}`;
-      this.hint.textContent = `Press ${maxHumans === 2 ? "1-2" : "1-4"}`;
+      this.subtitle.textContent = "Select number of players";
+      this.hint.textContent = `You can click buttons or press number keys. ${!this.isMobile && this.savedMenuSettings ? "\nPress Enter to start the game with your last settings." : ""}`;
       this.setMobileMenuButtons([
-        { kind: "number", value: 1, label: "1" },
-        { kind: "number", value: 2, label: "2" },
-        ...(maxHumans >= 3 ? [{ kind: "number", value: 3, label: "3" }] : []),
-        ...(maxHumans >= 4 ? [{ kind: "number", value: 4, label: "4" }] : []),
+        { kind: "number", value: 1, label: "(1) One" },
+        { kind: "number", value: 2, label: "(2) Two" },
+        ...(maxHumans >= 3 ? [{ kind: "number", value: 3, label: "(3) Three" }] : []),
+        ...(maxHumans >= 4 ? [{ kind: "number", value: 4, label: "(4) Four" }] : []),
       ]);
       this.setMobileSteeringControls();
       return;
@@ -406,22 +416,24 @@ class SphereSnakeGame {
 
     if (this.state === GAME_STATE.MENU_BOTS) {
       const maxBots = 4 - this.menu.humans;
-      this.subtitle.textContent = `Choose bots (0-${maxBots}): ${this.menu.bots}`;
-      this.hint.textContent = "Press number\nBackspace: back";
+      this.subtitle.textContent = "Select number of bots";
+      this.hint.textContent = `You can click buttons or press number keys.`;
       this.setMobileMenuButtons(
-        [{ kind: "back", label: "Back" }].concat([...Array(maxBots + 1).keys()].map((value) => ({ kind: "number", value, label: `${value}` }))),
+        [{ kind: "back", label: "(backspace) Back" }].concat(
+          [...Array(maxBots + 1).keys()].map((value) => ({ kind: "number", value, label: `(${value}) ${value}` })),
+        ),
       );
       this.setMobileSteeringControls();
       return;
     }
 
     if (this.state === GAME_STATE.MENU_MODE) {
-      this.subtitle.textContent = `Mode: ${this.menu.continuous ? "Continuous" : "Normal"}`;
-      this.hint.textContent = "1 Normal, 2 Continuous\nBackspace: back";
+      this.subtitle.textContent = "Select mode";
+      this.hint.textContent = "You can click buttons or press number keys.";
       this.setMobileMenuButtons([
-        { kind: "back", label: "Back" },
-        { kind: "number", value: 1, label: "1" },
-        { kind: "number", value: 2, label: "2" },
+        { kind: "back", label: "(backspace) Back" },
+        { kind: "number", value: 1, label: "(1) Normal" },
+        { kind: "number", value: 2, label: "(2) Continuous" },
       ]);
       this.showMenuControlPreview();
       this.setMobileSteeringControls();
@@ -429,12 +441,12 @@ class SphereSnakeGame {
     }
 
     if (this.state === GAME_STATE.MENU_JUMP) {
-      this.subtitle.textContent = `Jump Mode: ${this.menu.jumpMode ? "On" : "Off"}`;
-      this.hint.textContent = "1 No Jump, 2 Jump\nBackspace: back";
+      this.subtitle.textContent = "Play with jumps?";
+      this.hint.textContent = "You can click buttons or press number keys.";
       this.setMobileMenuButtons([
-        { kind: "back", label: "Back" },
-        { kind: "number", value: 1, label: "1" },
-        { kind: "number", value: 2, label: "2" },
+        { kind: "back", label: "(backspace) Back" },
+        { kind: "number", value: 1, label: "(1) Off" },
+        { kind: "number", value: 2, label: "(2) On" },
       ]);
       this.showMenuControlPreview();
       this.setMobileSteeringControls();
@@ -508,6 +520,22 @@ class SphereSnakeGame {
     player.rightEye = rightEye;
   }
 
+  configureHeadRenderPriority(player) {
+    // Keep face readable over overlapping trail fragments, while preserving normal occlusion.
+    player.headMesh.renderOrder = 90;
+    player.headMesh.traverse((node) => {
+      if (!node.isMesh || !node.material) {
+        return;
+      }
+      node.renderOrder = 90;
+      node.material.depthTest = true;
+      node.material.depthWrite = true;
+      node.material.polygonOffset = true;
+      node.material.polygonOffsetFactor = -1;
+      node.material.polygonOffsetUnits = -1;
+    });
+  }
+
   updateHeadVisuals(player, dt) {
     player.headMesh.position.copy(player.pos);
 
@@ -551,17 +579,36 @@ class SphereSnakeGame {
       player.rightEye.scale.set(1, eyeScaleY, 1);
     }
 
-    if (player.eyesCrossed) {
-      player.leftPupil.position.set(0.045, 0, 0.1);
-      player.rightPupil.position.set(-0.045, 0, 0.1);
-      return;
-    }
-
     player.eyeTime += dt * 7.5;
-    const lx = Math.sin(player.eyeTime * 1.9) * 0.03;
-    const ly = Math.cos(player.eyeTime * 2.3) * 0.025;
-    const rx = Math.sin(player.eyeTime * 2.2 + 0.8) * 0.03;
-    const ry = Math.cos(player.eyeTime * 1.7 + 0.35) * 0.025;
+    let lx = Math.sin(player.eyeTime * 1.9) * 0.03;
+    let ly = Math.cos(player.eyeTime * 2.3) * 0.025;
+    let rx = Math.sin(player.eyeTime * 2.2 + 0.8) * 0.03;
+    let ry = Math.cos(player.eyeTime * 1.7 + 0.35) * 0.025;
+
+    if (player.deathEyeWobbleActive) {
+      player.deathEyeWobbleTime += dt;
+      const progress = THREE.MathUtils.clamp(player.deathEyeWobbleTime / player.deathEyeWobbleDuration, 0, 1);
+      const damp = (1 - progress) * (1 - progress);
+      const t = player.deathEyeWobblePhase + player.deathEyeWobbleTime * 32;
+      const amp = 0.07 * damp;
+      lx += Math.sin(t * 1.13) * amp;
+      ly += Math.cos(t * 0.87) * amp;
+      rx += Math.sin(t * 0.97 + 0.9) * amp;
+      ry += Math.cos(t * 1.21 + 0.4) * amp;
+
+      if (progress >= 1) {
+        player.deathEyeWobbleActive = false;
+        player.deathEyeFreezeLeftX = lx;
+        player.deathEyeFreezeLeftY = ly;
+        player.deathEyeFreezeRightX = rx;
+        player.deathEyeFreezeRightY = ry;
+      }
+    } else if (player.status !== PLAYER_STATUS.ACTIVE) {
+      lx = player.deathEyeFreezeLeftX;
+      ly = player.deathEyeFreezeLeftY;
+      rx = player.deathEyeFreezeRightX;
+      ry = player.deathEyeFreezeRightY;
+    }
 
     player.leftPupil.position.set(lx, ly, 0.11);
     player.rightPupil.position.set(rx, ry, 0.11);
@@ -923,11 +970,23 @@ class SphereSnakeGame {
       if (player.status === PLAYER_STATUS.ACTIVE) {
         this.updateCamera(player);
       } else if (player.status === PLAYER_STATUS.OUT || player.status === PLAYER_STATUS.RESPAWNING) {
+        this.updateHeadVisuals(player, dt);
         this.updateDeathCamera(player, dt);
       }
     }
 
     this.updateViewportLabels();
+  }
+
+  updateRoundOver(dt) {
+    for (const player of this.players) {
+      if (player.status === PLAYER_STATUS.ACTIVE) {
+        this.updateCamera(player);
+      } else if (player.status === PLAYER_STATUS.OUT || player.status === PLAYER_STATUS.RESPAWNING) {
+        this.updateHeadVisuals(player, dt);
+        this.updateDeathCamera(player, dt);
+      }
+    }
   }
 
   shouldBotDash(player) {
@@ -1000,7 +1059,9 @@ class SphereSnakeGame {
   }
 
   handleCrash(player) {
-    player.eyesCrossed = true;
+    player.deathEyeWobbleActive = true;
+    player.deathEyeWobbleTime = 0;
+    player.deathEyeWobblePhase = Math.random() * Math.PI * 2;
     player.deathCameraTime = 0;
     player.deathCameraDir = Math.random() < 0.5 ? -1 : 1;
     this.updateHeadVisuals(player, 0);
@@ -1040,7 +1101,6 @@ class SphereSnakeGame {
     player.status = PLAYER_STATUS.RESPAWNING;
     player.respawnTimer = this.config.fadeDuration;
     player.trailCollidable = false;
-    player.eyesCrossed = true;
     player.headMesh.visible = true;
     player.turnInput = 0;
   }
@@ -1147,14 +1207,25 @@ class SphereSnakeGame {
   }
 
   startCelebration(winner) {
+    const up = winner.up.clone().normalize();
+    const right = new THREE.Vector3().crossVectors(up, new THREE.Vector3(0, 1, 0));
+    if (right.lengthSq() < 1e-5) {
+      right.crossVectors(up, new THREE.Vector3(1, 0, 0));
+    }
+    right.normalize();
+    const forward = new THREE.Vector3().crossVectors(right, up).normalize();
+
     this.celebrationGroup.visible = true;
     this.celebration = {
       center: winner.pos.clone(),
+      up,
+      right,
+      forward,
       time: 0,
     };
     this.spectatorCenter.copy(winner.pos);
 
-    this.crownGroup.position.copy(winner.pos).addScaledVector(winner.up, 1.9);
+    this.crownGroup.position.copy(winner.pos).addScaledVector(up, 1.9);
 
     for (const spark of this.sparkPool) {
       const dir = new THREE.Vector3(
@@ -1187,9 +1258,12 @@ class SphereSnakeGame {
 
     this.celebration.time += dt;
     const t = this.celebration.time;
-
-    this.crownGroup.position.y = this.celebration.center.y + 2 + Math.sin(t * 3.2) * 0.4;
-    this.crownGroup.rotation.y += dt * 1.2;
+    const crownBob = 1.9 + Math.sin(t * 3.2) * 0.28;
+    const crownPos = this.celebration.center.clone().addScaledVector(this.celebration.up, crownBob);
+    this.crownGroup.position.copy(crownPos);
+    const crownAlign = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.celebration.up);
+    const crownSpin = new THREE.Quaternion().setFromAxisAngle(this.celebration.up, t * 1.2);
+    this.crownGroup.quaternion.copy(crownSpin).multiply(crownAlign);
 
     for (const spark of this.sparkPool) {
       spark.life += dt;
@@ -1211,14 +1285,17 @@ class SphereSnakeGame {
       spark.mesh.material.opacity = Math.max(0, 1 - spark.life / spark.maxLife);
     }
 
-    const orbitRadius = 14;
-    const orbitHeight = 7.5;
+    const orbitRadius = 13.8;
+    const orbitLift = 5.7;
     const orbitSpeed = 0.45;
-    this.spectatorCamera.position.set(
-      this.celebration.center.x + Math.cos(t * orbitSpeed) * orbitRadius,
-      this.celebration.center.y + orbitHeight,
-      this.celebration.center.z + Math.sin(t * orbitSpeed) * orbitRadius,
-    );
+    const orbitAngle = t * orbitSpeed;
+    const orbitOffset = this.celebration.right
+      .clone()
+      .multiplyScalar(Math.cos(orbitAngle) * orbitRadius)
+      .addScaledVector(this.celebration.forward, Math.sin(orbitAngle) * orbitRadius)
+      .addScaledVector(this.celebration.up, orbitLift);
+    this.spectatorCamera.position.copy(this.celebration.center).add(orbitOffset);
+    this.spectatorCamera.up.copy(this.spectatorCamera.position.clone().normalize());
     this.spectatorCamera.lookAt(this.celebration.center);
   }
 
@@ -1415,6 +1492,9 @@ class SphereSnakeGame {
 
     if (this.state === GAME_STATE.RUNNING) {
       this.updateRunning(dt);
+    } else if (this.state === GAME_STATE.ROUND_OVER) {
+      this.updateRoundOver(dt);
+      this.updateMenu();
     } else if (this.state === GAME_STATE.MATCH_OVER) {
       this.updateCelebration(dt);
       this.updateMenu();
