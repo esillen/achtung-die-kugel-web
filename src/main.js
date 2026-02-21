@@ -153,10 +153,10 @@ class SnakeTrail {
     this.scene.add(this.root);
 
     this.material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 });
+    this.capGeometry = new THREE.SphereGeometry(config.bodyRadius, 10, 10);
 
-    this.meshSegments = [];
-    this.currentMesh = null;
-    this.currentPoints = [];
+    this.segments = [];
+    this.currentSegment = null;
     this.solidPoints = [];
     this.lastPlacedPoint = null;
     this.sampleSpacing = config.bodyRadius * 0.9;
@@ -167,14 +167,17 @@ class SnakeTrail {
   }
 
   reset() {
-    for (const mesh of this.meshSegments) {
-      this.root.remove(mesh);
-      mesh.geometry.dispose();
+    for (const segment of this.segments) {
+      if (segment.mesh) {
+        this.root.remove(segment.mesh);
+        segment.mesh.geometry.dispose();
+      }
+      this.root.remove(segment.startCap);
+      this.root.remove(segment.endCap);
     }
 
-    this.meshSegments.length = 0;
-    this.currentMesh = null;
-    this.currentPoints.length = 0;
+    this.segments.length = 0;
+    this.currentSegment = null;
     this.solidPoints.length = 0;
     this.lastPlacedPoint = null;
 
@@ -193,8 +196,7 @@ class SnakeTrail {
       this.gapRemaining -= dt;
       if (this.gapRemaining <= 0) {
         this.inGap = false;
-        this.currentMesh = null;
-        this.currentPoints.length = 0;
+        this.currentSegment = null;
       }
       return;
     }
@@ -204,8 +206,7 @@ class SnakeTrail {
       this.inGap = true;
       this.gapRemaining = this.rand(this.config.gapDurationMin, this.config.gapDurationMax);
       this.timeToNextGap = this.rand(this.config.gapIntervalMin, this.config.gapIntervalMax);
-      this.currentMesh = null;
-      this.currentPoints.length = 0;
+      this.currentSegment = null;
       this.lastPlacedPoint = point.clone();
       return;
     }
@@ -234,29 +235,49 @@ class SnakeTrail {
   }
 
   pushSolidPoint(point) {
-    this.currentPoints.push(point.clone());
+    if (!this.currentSegment) {
+      const startCap = new THREE.Mesh(this.capGeometry, this.material);
+      const endCap = new THREE.Mesh(this.capGeometry, this.material);
+      startCap.position.copy(point);
+      endCap.position.copy(point);
+      this.root.add(startCap);
+      this.root.add(endCap);
 
-    if (this.currentPoints.length < 2) {
+      this.currentSegment = {
+        points: [],
+        mesh: null,
+        startCap,
+        endCap,
+      };
+      this.segments.push(this.currentSegment);
+    }
+
+    this.currentSegment.points.push(point.clone());
+    this.currentSegment.endCap.position.copy(point);
+    if (this.currentSegment.points.length === 1) {
+      this.currentSegment.startCap.position.copy(point);
+    }
+
+    if (this.currentSegment.points.length < 2) {
       this.solidPoints.push(point.clone());
       return;
     }
 
-    const tubeSegments = Math.max(10, this.currentPoints.length * 2);
+    const tubeSegments = Math.max(10, this.currentSegment.points.length * 2);
     const geometry = new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3(this.currentPoints),
+      new THREE.CatmullRomCurve3(this.currentSegment.points),
       tubeSegments,
       this.config.bodyRadius,
       8,
       false,
     );
 
-    if (!this.currentMesh) {
-      this.currentMesh = new THREE.Mesh(geometry, this.material);
-      this.root.add(this.currentMesh);
-      this.meshSegments.push(this.currentMesh);
+    if (!this.currentSegment.mesh) {
+      this.currentSegment.mesh = new THREE.Mesh(geometry, this.material);
+      this.root.add(this.currentSegment.mesh);
     } else {
-      this.currentMesh.geometry.dispose();
-      this.currentMesh.geometry = geometry;
+      this.currentSegment.mesh.geometry.dispose();
+      this.currentSegment.mesh.geometry = geometry;
     }
 
     this.solidPoints.push(point.clone());
@@ -279,8 +300,7 @@ class SnakeTrail {
   forceGap(duration, referencePoint) {
     this.inGap = true;
     this.gapRemaining = Math.max(this.gapRemaining, duration);
-    this.currentMesh = null;
-    this.currentPoints.length = 0;
+    this.currentSegment = null;
     if (referencePoint) {
       this.lastPlacedPoint = referencePoint.clone();
     }
@@ -288,6 +308,7 @@ class SnakeTrail {
 
   dispose() {
     this.reset();
+    this.capGeometry.dispose();
     this.material.dispose();
     this.scene.remove(this.root);
   }
@@ -1267,6 +1288,14 @@ class SphereSnakeGame {
       dashFlashEl.className = "dash-flash";
       this.viewportLabels.appendChild(dashFlashEl);
       player.dashFlashEl = dashFlashEl;
+
+      const dashCooldownEl = document.createElement("div");
+      dashCooldownEl.className = "dash-cooldown";
+      dashCooldownEl.innerHTML =
+        '<svg viewBox="0 0 40 40" aria-hidden="true"><circle class="track" cx="20" cy="20" r="16"></circle><circle class="progress" cx="20" cy="20" r="16"></circle></svg>';
+      this.viewportLabels.appendChild(dashCooldownEl);
+      player.dashCooldownEl = dashCooldownEl;
+      player.dashCooldownProgressEl = dashCooldownEl.querySelector(".progress");
     }
 
     this.updateViewportLabels();
@@ -1346,6 +1375,28 @@ class SphereSnakeGame {
         player.dashFlashEl.style.width = `${Math.max(0, vw - 6)}px`;
         player.dashFlashEl.style.height = `${Math.max(0, vh - 6)}px`;
         player.dashFlashEl.style.opacity = opacity.toFixed(3);
+      }
+
+      if (player.dashCooldownEl && player.dashCooldownProgressEl) {
+        const isCoolingDown = this.menu.jumpMode && player.status === PLAYER_STATUS.ACTIVE && player.dashCooldown > 0;
+        if (!isCoolingDown) {
+          player.dashCooldownEl.style.opacity = "0";
+        } else {
+          const normalized = THREE.MathUtils.clamp(player.dashCooldown / this.config.dashCooldown, 0, 1);
+          const circumference = Math.PI * 32;
+          const visibleLength = circumference * normalized;
+          const headNdc = player.pos.clone().project(player.camera);
+          if (headNdc.z < -1 || headNdc.z > 1) {
+            player.dashCooldownEl.style.opacity = "0";
+            continue;
+          }
+          const px = vx + (headNdc.x * 0.5 + 0.5) * vw;
+          const py = height - (vy + (headNdc.y * 0.5 + 0.5) * vh);
+          player.dashCooldownEl.style.left = `${px - 20}px`;
+          player.dashCooldownEl.style.top = `${py - 58}px`;
+          player.dashCooldownEl.style.opacity = "1";
+          player.dashCooldownProgressEl.style.strokeDasharray = `${visibleLength} ${circumference}`;
+        }
       }
     }
 
