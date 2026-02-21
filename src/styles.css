@@ -1,0 +1,83 @@
+:root {
+  --bg: #05080f;
+  --text: #f3f7ff;
+  --muted: #afbbd1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(circle at 30% 20%, #122038, var(--bg) 60%);
+  color: var(--text);
+  font-family: "Trebuchet MS", "Avenir Next", sans-serif;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.viewport-labels {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.viewport-label {
+  position: fixed;
+  padding: 0.34rem 0.6rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: white;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: rgba(2, 8, 18, 0.48);
+  backdrop-filter: blur(1px);
+  transition: opacity 200ms ease;
+  padding: 1rem;
+}
+
+.overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2.1rem, 6vw, 4.4rem);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#subtitle {
+  margin: 0.7rem 0 0;
+  font-size: clamp(1rem, 2vw, 1.4rem);
+  color: var(--text);
+}
+
+.hint {
+  margin-top: 0.8rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+  white-space: pre-line;
+  line-height: 1.4;
+}
