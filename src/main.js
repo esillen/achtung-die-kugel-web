@@ -1229,6 +1229,7 @@ class SphereSnakeGame {
     const up = player.up.clone().multiplyScalar(this.config.cameraHeight);
     const desired = player.pos.clone().add(back).add(up);
     player.camera.position.copy(desired);
+    player.camera.up.copy(player.forward);
     player.camera.lookAt(player.pos);
   }
 
