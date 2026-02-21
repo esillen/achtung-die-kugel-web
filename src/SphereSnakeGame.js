@@ -1,5 +1,16 @@
 import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
-import { CONTROL_SCHEMES, GAME_CONFIG, GAMEPAD, MENU_DEFAULTS, MENU_SETTINGS_STORAGE_KEY, PLAYER_COLORS } from "./GAMEPLAY_CONSTANTS.js";
+import {
+  CONTROL_SCHEMES,
+  DASH_FX_BASE_CAMERA,
+  DEATH_CAMERA_CONFIG,
+  GAME_CONFIG,
+  GAMEPAD,
+  MENU_DEFAULTS,
+  MENU_SETTINGS_STORAGE_KEY,
+  PLAYER_COLORS,
+  SPHERE_AUTO_SCALE_RADII,
+  SPHERE_SIZE_PRESETS,
+} from "./GAMEPLAY_CONSTANTS.js";
 import { GAME_STATE, PLAYER_STATUS } from "./game-state.js";
 import InputManager from "./input-manager.js";
 import SnakeTrail from "./snake-trail.js";
@@ -13,6 +24,7 @@ class SphereSnakeGame {
     this.subtitle = subtitle;
     this.hint = hint;
     this.viewportLabels = viewportLabels;
+    this.menuProgressEl = document.getElementById("menu-progress");
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -57,7 +69,7 @@ class SphereSnakeGame {
   }
 
   initWorld() {
-    const world = new THREE.Mesh(
+    this.worldMesh = new THREE.Mesh(
       new THREE.SphereGeometry(this.config.worldRadius, 52, 52),
       new THREE.MeshBasicMaterial({
         color: 0x294569,
@@ -67,13 +79,47 @@ class SphereSnakeGame {
         side: THREE.DoubleSide,
       }),
     );
-    this.scene.add(world);
+    this.scene.add(this.worldMesh);
 
-    const grid = new THREE.Mesh(
+    this.worldGridMesh = new THREE.Mesh(
       new THREE.SphereGeometry(this.config.worldRadius + 0.03, 30, 30),
       new THREE.MeshBasicMaterial({ color: 0x3a5f8d, wireframe: true, transparent: true, opacity: 0.35 }),
     );
-    this.scene.add(grid);
+    this.scene.add(this.worldGridMesh);
+  }
+
+  getScaledWorldRadius() {
+    const total = Math.max(1, this.menu.humans + this.menu.bots);
+    return SPHERE_AUTO_SCALE_RADII[Math.min(total, SPHERE_AUTO_SCALE_RADII.length) - 1];
+  }
+
+  getWorldRadiusForMenuSize(sizeSetting) {
+    if (sizeSetting === 0) {
+      return this.getScaledWorldRadius();
+    }
+    return SPHERE_SIZE_PRESETS[Math.max(1, Math.min(9, sizeSetting)) - 1];
+  }
+
+  applySphereSizeFromMenu() {
+    const radius = this.getWorldRadiusForMenuSize(this.menu.sphereSize);
+    const scale = radius / GAME_CONFIG.worldRadius;
+
+    this.config.worldRadius = radius;
+    this.config.speed = GAME_CONFIG.speed * scale;
+    this.config.cameraDistance = GAME_CONFIG.cameraDistance * scale;
+    this.config.cameraHeight = GAME_CONFIG.cameraHeight * scale;
+    this.config.dashDistance = GAME_CONFIG.dashDistance * scale;
+
+    if (this.worldMesh) {
+      this.worldMesh.geometry.dispose();
+      this.worldMesh.geometry = new THREE.SphereGeometry(radius, 52, 52);
+    }
+    if (this.worldGridMesh) {
+      this.worldGridMesh.geometry.dispose();
+      this.worldGridMesh.geometry = new THREE.SphereGeometry(radius + 0.03, 30, 30);
+    }
+
+    this.spectatorCenter.set(0, radius, 0);
   }
 
   initCelebrationSystem() {
@@ -187,6 +233,15 @@ class SphereSnakeGame {
       const el = document.createElement("button");
       el.type = "button";
       el.className = "mobile-btn";
+      if (button.kind === "number") {
+        el.classList.add("mobile-btn-choice");
+      } else if (button.kind === "back") {
+        el.classList.add("mobile-btn-back");
+      } else if (button.kind === "saved") {
+        el.classList.add("mobile-btn-saved");
+      } else if (button.kind === "advance") {
+        el.classList.add("mobile-btn-advance");
+      }
       el.textContent = button.label;
       el.addEventListener("click", () => {
         if (button.kind === "number") {
@@ -366,7 +421,7 @@ class SphereSnakeGame {
     player.respawnTimer = 0;
     player.spawnGraceTimer = this.config.spawnGraceDuration;
     player.turnInput = 0;
-    player.dashCooldown = this.config.dashCooldown;
+    player.dashCooldown = 0;
     player.dashRequested = false;
     player.dashFlashTimer = 0;
     player.eyeTime = Math.random() * Math.PI * 2;
@@ -399,6 +454,7 @@ class SphereSnakeGame {
   syncOverlay() {
     this.overlay.classList.remove("hidden");
     this.clearMenuControlPreview();
+    this.updateMenuProgress();
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
       const maxHumans = this.isMobile ? 2 : 4;
@@ -417,11 +473,23 @@ class SphereSnakeGame {
     if (this.state === GAME_STATE.MENU_BOTS) {
       const maxBots = 4 - this.menu.humans;
       this.subtitle.textContent = "Select number of bots";
-      this.hint.textContent = `You can click buttons or press number keys.`;
+      this.hint.textContent = "Choose bots with number keys.";
       this.setMobileMenuButtons(
-        [{ kind: "back", label: "(backspace) Back" }].concat(
-          [...Array(maxBots + 1).keys()].map((value) => ({ kind: "number", value, label: `(${value}) ${value}` })),
-        ),
+        [{ kind: "back", label: "(backspace) Back" }]
+          .concat([...Array(maxBots + 1).keys()].map((value) => ({ kind: "number", value, label: `(${value}) ${value}` }))),
+      );
+      this.setMobileSteeringControls();
+      return;
+    }
+
+    if (this.state === GAME_STATE.MENU_SIZE) {
+      const current = this.menu.sphereSize;
+      this.subtitle.textContent = "Select sphere size";
+      this.hint.textContent = `0 = scaling with players (current radius ${this.getScaledWorldRadius().toFixed(0)}).\n1-9 = fixed size.\nCurrent: ${current}\nPress Space to use last saved size and continue.`;
+      this.setMobileMenuButtons(
+        [{ kind: "back", label: "(backspace) Back" }]
+          .concat([...Array(10).keys()].map((value) => ({ kind: "number", value, label: value === 0 ? "(0) Auto" : `(${value}) ${value}` })))
+          .concat(this.savedMenuSettings ? [{ kind: "saved", label: `(space) Use Last (${this.formatSizeLabel(this.savedMenuSettings.sphereSize)})` }] : []),
       );
       this.setMobileSteeringControls();
       return;
@@ -429,24 +497,38 @@ class SphereSnakeGame {
 
     if (this.state === GAME_STATE.MENU_MODE) {
       this.subtitle.textContent = "Select mode";
-      this.hint.textContent = "You can click buttons or press number keys.";
+      this.hint.textContent = "You can click buttons or press number keys.\nPress Space to use last saved mode and continue.";
       this.setMobileMenuButtons([
         { kind: "back", label: "(backspace) Back" },
         { kind: "number", value: 1, label: "(1) Normal" },
         { kind: "number", value: 2, label: "(2) Continuous" },
+        ...(this.savedMenuSettings
+          ? [{ kind: "saved", label: `(space) Use Last (${this.savedMenuSettings.continuous ? "mode continuous" : "mode normal"})` }]
+          : []),
       ]);
-      this.showMenuControlPreview();
       this.setMobileSteeringControls();
       return;
     }
 
     if (this.state === GAME_STATE.MENU_JUMP) {
       this.subtitle.textContent = "Play with jumps?";
-      this.hint.textContent = "You can click buttons or press number keys.";
+      this.hint.textContent = "You can click buttons or press number keys.\nPress Space to use last saved jump setting and start.";
       this.setMobileMenuButtons([
         { kind: "back", label: "(backspace) Back" },
         { kind: "number", value: 1, label: "(1) Off" },
         { kind: "number", value: 2, label: "(2) On" },
+        ...(this.savedMenuSettings ? [{ kind: "saved", label: `(space) Use Last (${this.savedMenuSettings.jumpMode ? "jumps on" : "jumps off"})` }] : []),
+      ]);
+      this.setMobileSteeringControls();
+      return;
+    }
+
+    if (this.state === GAME_STATE.MENU_READY) {
+      this.subtitle.textContent = "Ready";
+      this.hint.textContent = "Check your controls below.\nPress Space to start.";
+      this.setMobileMenuButtons([
+        { kind: "back", label: "(backspace) Back" },
+        { kind: "advance", label: "(space) Start Game" },
       ]);
       this.showMenuControlPreview();
       this.setMobileSteeringControls();
@@ -473,6 +555,73 @@ class SphereSnakeGame {
       this.setMobileMenuButtons([{ kind: "advance", label: "New Match" }]);
       this.setMobileSteeringControls();
     }
+  }
+
+  formatSizeLabel(sizeValue) {
+    return sizeValue === 0 ? "size scaling" : `size ${sizeValue}`;
+  }
+
+  pluralize(count, singular, plural) {
+    return `${count} ${count === 1 ? singular : plural}`;
+  }
+
+  updateMenuProgress() {
+    if (!this.menuProgressEl) {
+      return;
+    }
+
+    const isMenuState =
+      this.state === GAME_STATE.MENU_PLAYERS ||
+      this.state === GAME_STATE.MENU_BOTS ||
+      this.state === GAME_STATE.MENU_SIZE ||
+      this.state === GAME_STATE.MENU_MODE ||
+      this.state === GAME_STATE.MENU_JUMP ||
+      this.state === GAME_STATE.MENU_READY;
+
+    if (!isMenuState) {
+      this.menuProgressEl.style.display = "none";
+      return;
+    }
+
+    this.menuProgressEl.classList.remove("is-pending");
+    if (this.state === GAME_STATE.MENU_PLAYERS) {
+      this.menuProgressEl.style.display = "none";
+      return;
+    }
+
+    this.menuProgressEl.style.display = "block";
+    const players = this.pluralize(this.menu.humans, "player", "players");
+    const bots = this.pluralize(this.menu.bots, "bot", "bots");
+    const size = this.formatSizeLabel(this.menu.sphereSize);
+    const mode = this.menu.continuous ? "mode continuous" : "mode normal";
+    const jumps = this.menu.jumpMode ? "jumps on" : "jumps off";
+
+    if (this.state === GAME_STATE.MENU_BOTS) {
+      this.menuProgressEl.classList.add("is-pending");
+      this.menuProgressEl.innerHTML = `${players} -> <span class="dots"><span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>`;
+      return;
+    }
+    if (this.state === GAME_STATE.MENU_SIZE) {
+      this.menuProgressEl.classList.add("is-pending");
+      this.menuProgressEl.innerHTML = `${players} -> ${bots} -> <span class="dots"><span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>`;
+      return;
+    }
+    if (this.state === GAME_STATE.MENU_MODE) {
+      this.menuProgressEl.classList.add("is-pending");
+      this.menuProgressEl.innerHTML = `${players} -> ${bots} -> ${size} -> <span class="dots"><span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>`;
+      return;
+    }
+    if (this.state === GAME_STATE.MENU_JUMP) {
+      this.menuProgressEl.classList.add("is-pending");
+      this.menuProgressEl.innerHTML =
+        `${players} -> ${bots} -> ${size} -> ${mode} -> <span class="dots"><span class="dot">.</span><span class="dot">.</span><span class="dot">.</span></span>`;
+      return;
+    }
+    if (this.state === GAME_STATE.MENU_READY) {
+      this.menuProgressEl.textContent = `${players} -> ${bots} -> ${size} -> ${mode} -> ${jumps}`;
+      return;
+    }
+    this.menuProgressEl.textContent = `${players} -> ${bots} -> ${size} -> ${mode} -> ${jumps}`;
   }
 
   codeLabel(code) {
@@ -544,6 +693,16 @@ class SphereSnakeGame {
     const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
     const basis = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
     player.headMesh.quaternion.setFromRotationMatrix(basis);
+
+    const inSpawnGrace = player.status === PLAYER_STATUS.ACTIVE && player.spawnGraceTimer > 0;
+    const headOpacity = inSpawnGrace ? 0.58 : 1;
+    player.headMesh.traverse((node) => {
+      if (!node.isMesh || !node.material) {
+        return;
+      }
+      node.material.transparent = headOpacity < 0.999;
+      node.material.opacity = headOpacity;
+    });
 
     if (!player.leftPupil || !player.rightPupil) {
       return;
@@ -620,6 +779,7 @@ class SphereSnakeGame {
 
   startMatch() {
     this.saveMenuSettings();
+    this.applySphereSizeFromMenu();
     this.createPlayers();
     this.stopCelebration();
     this.state = GAME_STATE.RUNNING;
@@ -670,6 +830,27 @@ class SphereSnakeGame {
       const selected = this.readNumberKey(0, maxBots);
       if (selected !== null) {
         this.menu.bots = selected;
+        this.state = GAME_STATE.MENU_SIZE;
+        this.syncOverlay();
+        return;
+      }
+    }
+
+    if (this.state === GAME_STATE.MENU_SIZE) {
+      const selected = this.readNumberKey(0, 9);
+      if (selected !== null) {
+        this.menu.sphereSize = selected;
+        this.state = GAME_STATE.MENU_MODE;
+        this.syncOverlay();
+        return;
+      }
+
+      const useLastPressed = this.input.consumePress("Space") || this.mobileUseSaved;
+      this.mobileUseSaved = false;
+      if (useLastPressed) {
+        if (this.savedMenuSettings) {
+          this.menu.sphereSize = this.savedMenuSettings.sphereSize;
+        }
         this.state = GAME_STATE.MENU_MODE;
         this.syncOverlay();
         return;
@@ -690,17 +871,48 @@ class SphereSnakeGame {
         this.syncOverlay();
         return;
       }
+
+      const useLastPressed = this.input.consumePress("Space") || this.mobileUseSaved;
+      this.mobileUseSaved = false;
+      if (useLastPressed) {
+        if (this.savedMenuSettings) {
+          this.menu.continuous = this.savedMenuSettings.continuous;
+        }
+        this.state = GAME_STATE.MENU_JUMP;
+        this.syncOverlay();
+        return;
+      }
     }
 
     if (this.state === GAME_STATE.MENU_JUMP) {
       const selected = this.readNumberKey(1, 2);
       if (selected === 1) {
         this.menu.jumpMode = false;
-        this.startMatch();
+        this.state = GAME_STATE.MENU_READY;
+        this.syncOverlay();
         return;
       }
       if (selected === 2) {
         this.menu.jumpMode = true;
+        this.state = GAME_STATE.MENU_READY;
+        this.syncOverlay();
+        return;
+      }
+
+      const useLastPressed = this.input.consumePress("Space") || this.mobileUseSaved;
+      this.mobileUseSaved = false;
+      if (useLastPressed && this.savedMenuSettings) {
+        this.menu.jumpMode = this.savedMenuSettings.jumpMode;
+        this.state = GAME_STATE.MENU_READY;
+        this.syncOverlay();
+        return;
+      }
+    }
+
+    if (this.state === GAME_STATE.MENU_READY) {
+      const startPressed = this.input.consumePress("Space") || this.input.consumePress("Enter") || this.input.consumePress("NumpadEnter") || this.mobileMenuAdvance;
+      this.mobileMenuAdvance = false;
+      if (startPressed) {
         this.startMatch();
         return;
       }
@@ -742,12 +954,22 @@ class SphereSnakeGame {
       return true;
     }
     if (this.state === GAME_STATE.MENU_MODE) {
+      this.state = GAME_STATE.MENU_SIZE;
+      this.syncOverlay();
+      return true;
+    }
+    if (this.state === GAME_STATE.MENU_SIZE) {
       this.state = GAME_STATE.MENU_BOTS;
       this.syncOverlay();
       return true;
     }
     if (this.state === GAME_STATE.MENU_JUMP) {
       this.state = GAME_STATE.MENU_MODE;
+      this.syncOverlay();
+      return true;
+    }
+    if (this.state === GAME_STATE.MENU_READY) {
+      this.state = GAME_STATE.MENU_JUMP;
       this.syncOverlay();
       return true;
     }
@@ -769,11 +991,21 @@ class SphereSnakeGame {
       ["Digit2", 2],
       ["Digit3", 3],
       ["Digit4", 4],
+      ["Digit5", 5],
+      ["Digit6", 6],
+      ["Digit7", 7],
+      ["Digit8", 8],
+      ["Digit9", 9],
       ["Numpad0", 0],
       ["Numpad1", 1],
       ["Numpad2", 2],
       ["Numpad3", 3],
       ["Numpad4", 4],
+      ["Numpad5", 5],
+      ["Numpad6", 6],
+      ["Numpad7", 7],
+      ["Numpad8", 8],
+      ["Numpad9", 9],
     ];
 
     for (const [code, value] of keyMap) {
@@ -804,6 +1036,7 @@ class SphereSnakeGame {
 
     const humans = Number(candidate.humans);
     const bots = Number(candidate.bots);
+    const sphereSize = Number(candidate.sphereSize ?? MENU_DEFAULTS.sphereSize);
     const continuous = Boolean(candidate.continuous);
     const jumpMode = Boolean(candidate.jumpMode);
 
@@ -819,13 +1052,17 @@ class SphereSnakeGame {
     if (bots > maxBots) {
       return null;
     }
+    if (!Number.isInteger(sphereSize) || sphereSize < 0 || sphereSize > 9) {
+      return null;
+    }
 
-    return { humans, bots, continuous, jumpMode };
+    return { humans, bots, sphereSize, continuous, jumpMode };
   }
 
   applyMenuSettings(settings) {
     this.menu.humans = this.isMobile ? Math.min(settings.humans, 2) : settings.humans;
     this.menu.bots = Math.min(settings.bots, 4 - this.menu.humans);
+    this.menu.sphereSize = settings.sphereSize;
     this.menu.continuous = settings.continuous;
     this.menu.jumpMode = settings.jumpMode;
   }
@@ -912,7 +1149,7 @@ class SphereSnakeGame {
 
         const gamepadJumpPressed = this.input.consumeGamepadButtonPress(player.id, GAMEPAD.JUMP_BUTTON);
         const keyboardJumpPressed = this.input.consumePress(player.control.dash);
-        if (this.menu.jumpMode && (keyboardJumpPressed || gamepadJumpPressed)) {
+        if (this.menu.jumpMode && player.spawnGraceTimer <= 0 && (keyboardJumpPressed || gamepadJumpPressed)) {
           player.dashRequested = true;
         }
       }
@@ -923,7 +1160,7 @@ class SphereSnakeGame {
     for (const player of activePlayers) {
       if (player.isBot) {
         player.turnInput = this.botBrain.decide(player, this.players, predictedHeads);
-        if (this.menu.jumpMode && player.dashCooldown <= 0 && this.shouldBotDash(player)) {
+        if (this.menu.jumpMode && player.spawnGraceTimer <= 0 && player.dashCooldown <= 0 && this.shouldBotDash(player)) {
           player.dashRequested = true;
         }
       }
@@ -944,7 +1181,7 @@ class SphereSnakeGame {
         player.trail.addPoint(player.pos, dt);
       }
 
-      if (this.menu.jumpMode && player.dashRequested && player.dashCooldown <= 0) {
+      if (this.menu.jumpMode && player.spawnGraceTimer <= 0 && player.dashRequested && player.dashCooldown <= 0) {
         this.performDash(player);
       }
     }
@@ -1123,7 +1360,11 @@ class SphereSnakeGame {
   }
 
   spawnDashBurst(player) {
-    const origin = player.pos.clone().addScaledVector(player.forward, -0.6);
+    const cameraLen = Math.hypot(this.config.cameraDistance, this.config.cameraHeight);
+    const baseCameraLen = Math.hypot(DASH_FX_BASE_CAMERA.distance, DASH_FX_BASE_CAMERA.height);
+    const fxScale = THREE.MathUtils.clamp(cameraLen / baseCameraLen, 0.55, 2.6);
+
+    const origin = player.pos.clone().addScaledVector(player.forward, -0.6 * fxScale);
     const back = player.forward.clone().multiplyScalar(-1);
     const up = player.up.clone();
     const right = player.right.clone();
@@ -1143,13 +1384,13 @@ class SphereSnakeGame {
         .normalize();
 
       fx.mesh.visible = true;
-      fx.mesh.position.copy(origin).addScaledVector(dir, Math.random() * 0.6);
+      fx.mesh.position.copy(origin).addScaledVector(dir, Math.random() * 0.6 * fxScale);
       fx.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-      fx.velocity.copy(dir.multiplyScalar(18 + Math.random() * 9));
+      fx.velocity.copy(dir.multiplyScalar((18 + Math.random() * 9) * fxScale));
       fx.life = 0;
       fx.maxLife = 0.14 + Math.random() * 0.12;
       fx.mesh.material.opacity = 0.95;
-      fx.mesh.scale.set(1, 0.6 + Math.random() * 0.8, 1);
+      fx.mesh.scale.set(fxScale, (0.6 + Math.random() * 0.8) * fxScale, fxScale);
     }
   }
 
@@ -1310,15 +1551,15 @@ class SphereSnakeGame {
 
   updateDeathCamera(player, dt) {
     player.deathCameraTime += dt;
-    const t = Math.min(1, player.deathCameraTime / 0.7);
+    const t = Math.min(1, player.deathCameraTime / DEATH_CAMERA_CONFIG.swingDuration);
     const ease = 1 - Math.pow(1 - t, 3);
     const swingAngle = ease * 2.55 * player.deathCameraDir;
 
     const orbit = player.forward
       .clone()
-      .multiplyScalar(-this.config.cameraDistance * 0.88)
+      .multiplyScalar(-this.config.cameraDistance * DEATH_CAMERA_CONFIG.orbitDistanceFactor)
       .applyAxisAngle(player.up, swingAngle);
-    const up = player.up.clone().multiplyScalar(this.config.cameraHeight * 0.68);
+    const up = player.up.clone().multiplyScalar(this.config.cameraHeight * DEATH_CAMERA_CONFIG.liftFactor);
     const desired = player.pos.clone().add(orbit).add(up);
 
     player.camera.position.copy(desired);
@@ -1414,8 +1655,7 @@ class SphereSnakeGame {
     const showLabels =
       this.state === GAME_STATE.RUNNING ||
       this.state === GAME_STATE.ROUND_OVER ||
-      this.state === GAME_STATE.MENU_MODE ||
-      this.state === GAME_STATE.MENU_JUMP;
+      this.state === GAME_STATE.MENU_READY;
     this.viewportLabels.style.display = showLabels ? "block" : "none";
 
     const viewports = this.getViewports();
@@ -1455,11 +1695,15 @@ class SphereSnakeGame {
       }
 
       if (player.dashCooldownEl) {
-        const isCoolingDown = this.menu.jumpMode && player.status === PLAYER_STATUS.ACTIVE && player.dashCooldown > 0;
+        const spawnCoolingDown = player.status === PLAYER_STATUS.ACTIVE && player.spawnGraceTimer > 0;
+        const jumpCoolingDown = this.menu.jumpMode && player.status === PLAYER_STATUS.ACTIVE && player.dashCooldown > 0;
+        const isCoolingDown = spawnCoolingDown || jumpCoolingDown;
         if (!isCoolingDown) {
           player.dashCooldownEl.style.opacity = "0";
         } else {
-          const normalized = THREE.MathUtils.clamp(player.dashCooldown / this.config.dashCooldown, 0, 1);
+          const normalized = spawnCoolingDown
+            ? THREE.MathUtils.clamp(player.spawnGraceTimer / this.config.spawnGraceDuration, 0, 1)
+            : THREE.MathUtils.clamp(player.dashCooldown / this.config.dashCooldown, 0, 1);
           const headNdc = player.pos.clone().project(player.camera);
           if (headNdc.z < -1 || headNdc.z > 1) {
             player.dashCooldownEl.style.opacity = "0";
@@ -1470,6 +1714,7 @@ class SphereSnakeGame {
           player.dashCooldownEl.style.left = `${px - 16}px`;
           player.dashCooldownEl.style.top = `${py + 24}px`;
           player.dashCooldownEl.style.setProperty("--cooldown-half-angle", `${(normalized * 180).toFixed(2)}deg`);
+          player.dashCooldownEl.style.setProperty("--cooldown-color", spawnCoolingDown ? "rgba(255, 222, 120, 0.95)" : "rgba(160, 226, 255, 0.95)");
           player.dashCooldownEl.style.opacity = "1";
         }
       }
@@ -1482,7 +1727,7 @@ class SphereSnakeGame {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.spectatorCamera.aspect = window.innerWidth / window.innerHeight;
     this.spectatorCamera.updateProjectionMatrix();
-    if (this.state === GAME_STATE.MENU_MODE || this.state === GAME_STATE.MENU_JUMP) {
+    if (this.state === GAME_STATE.MENU_READY) {
       this.showMenuControlPreview();
     }
   }

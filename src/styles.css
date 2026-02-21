@@ -30,6 +30,7 @@ body {
   position: fixed;
   inset: 0;
   pointer-events: none;
+  z-index: 18;
 }
 
 .viewport-label {
@@ -69,11 +70,12 @@ body {
   transition: opacity 80ms linear;
   border-radius: 50%;
   --cooldown-half-angle: 0deg;
+  --cooldown-color: rgba(160, 226, 255, 0.95);
   background: conic-gradient(
     from 180deg,
-    rgba(160, 226, 255, 0.95) 0deg var(--cooldown-half-angle),
+    var(--cooldown-color) 0deg var(--cooldown-half-angle),
     rgba(160, 226, 255, 0.12) var(--cooldown-half-angle) calc(360deg - var(--cooldown-half-angle)),
-    rgba(160, 226, 255, 0.95) calc(360deg - var(--cooldown-half-angle)) 360deg
+    var(--cooldown-color) calc(360deg - var(--cooldown-half-angle)) 360deg
   );
   box-shadow:
     0 2px 3px rgba(0, 0, 0, 0.55),
@@ -95,6 +97,53 @@ body {
   backdrop-filter: blur(1px);
   transition: opacity 200ms ease;
   padding: 1rem;
+  z-index: 12;
+}
+
+.menu-progress {
+  position: absolute;
+  top: 0.85rem;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.menu-progress .dots {
+  display: inline-flex;
+  gap: 0.08em;
+  margin-left: 0.08em;
+}
+
+.menu-progress .dot {
+  display: inline-block;
+  transform: translateY(0);
+  animation: menu-dot-bob 0.9s ease-in-out infinite;
+}
+
+.menu-progress .dot:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.menu-progress .dot:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+@keyframes menu-dot-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  40% {
+    transform: translateY(0.22em);
+  }
 }
 
 .overlay.hidden {
@@ -124,12 +173,15 @@ h1 {
 }
 
 .mobile-controls {
+  position: relative;
   margin-top: 1rem;
   display: none;
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.55rem;
-  max-width: min(92vw, 560px);
+  max-width: min(92vw, 680px);
+  min-height: 5.8rem;
+  padding: 1.8rem 0.2rem 1.9rem;
 }
 
 .mobile-btn {
@@ -148,6 +200,27 @@ h1 {
 .mobile-btn:active {
   transform: scale(0.98);
   background: rgba(110, 180, 255, 0.3);
+}
+
+.mobile-btn-back {
+  position: absolute;
+  top: -0.35rem;
+  left: -0.55rem;
+}
+
+.mobile-btn-saved {
+  position: absolute;
+  left: 50%;
+  bottom: -0.35rem;
+  transform: translateX(-50%);
+  min-width: 16.8rem;
+}
+
+.mobile-btn-advance {
+  font-size: 1.02rem;
+  font-weight: 700;
+  min-width: 12rem;
+  padding: 0.68rem 1.1rem;
 }
 
 .menu-control-preview {

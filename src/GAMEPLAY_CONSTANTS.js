@@ -22,10 +22,10 @@ export const GAME_CONFIG = {
   headRadius: 0.62,
   collisionRadius: 0.62,
   safeTailIgnoreCount: 18,
-  cameraDistance: 10.2,
-  cameraHeight: 6.8,
-  gapIntervalMin: 1.3,
-  gapIntervalMax: 2.9,
+  cameraDistance: 8.2,
+  cameraHeight: 8.8,
+  gapIntervalMin: 2.3,
+  gapIntervalMax: 3.9,
   gapDurationMin: 0.16,
   gapDurationMax: 0.31,
   botSimSteps: 22,
@@ -42,8 +42,23 @@ export const GAME_CONFIG = {
 export const MENU_DEFAULTS = {
   humans: 2,
   bots: 0,
+  sphereSize: 0,
   continuous: false,
   jumpMode: false,
+};
+
+export const SPHERE_SIZE_PRESETS = [8, 12, 16, 20, 24, 28, 32, 34, 38];
+export const SPHERE_AUTO_SCALE_RADII = [16, 20, 24, 28];
+
+export const DASH_FX_BASE_CAMERA = {
+  distance: 10.2,
+  height: 6.8,
+};
+
+export const DEATH_CAMERA_CONFIG = {
+  swingDuration: 0.7,
+  orbitDistanceFactor: 0.88,
+  liftFactor: 0.68,
 };
 
 export const MENU_SETTINGS_STORAGE_KEY = "achtung-die-kugel.menu-settings.v1";
