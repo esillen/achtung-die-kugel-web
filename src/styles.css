@@ -149,3 +149,52 @@ h1 {
   transform: scale(0.98);
   background: rgba(110, 180, 255, 0.3);
 }
+
+.menu-control-preview {
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.mobile-steering {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: none;
+  gap: 0.55rem;
+  padding: 0.6rem;
+  pointer-events: none;
+  z-index: 12;
+}
+
+.mobile-steering.two-player {
+  grid-template-columns: 1fr 1fr;
+}
+
+.mobile-steer-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  pointer-events: auto;
+}
+
+.mobile-steer-btn {
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  background: rgba(0, 0, 0, 0.44);
+  color: #f3f7ff;
+  border-radius: 12px;
+  min-height: 74px;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.mobile-steering.two-player .mobile-steer-btn {
+  min-height: 54px;
+  font-size: 0.86rem;
+}
+
+.mobile-steer-btn:active {
+  background: rgba(110, 180, 255, 0.32);
+}

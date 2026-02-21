@@ -1,4 +1,5 @@
 import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
+import { CONTROL_SCHEMES, GAME_CONFIG, GAMEPAD, MENU_DEFAULTS, MENU_SETTINGS_STORAGE_KEY, PLAYER_COLORS } from "./GAMEPLAY_CONSTANTS.js";
 
 const GAME_STATE = {
   MENU_PLAYERS: "menu_players",
@@ -15,19 +16,6 @@ const PLAYER_STATUS = {
   OUT: "out",
   RESPAWNING: "respawning",
 };
-
-const PLAYER_COLORS = [0xff3b30, 0x34c759, 0x0a84ff, 0xffd60a];
-const CONTROL_SCHEMES = [
-  { label: "P1", left: "ArrowLeft", right: "ArrowRight", dash: "ArrowUp" },
-  { label: "P2", left: "KeyA", right: "KeyD", dash: "KeyW" },
-  { label: "P3", left: "KeyJ", right: "KeyL", dash: "KeyI" },
-  { label: "P4", left: "KeyF", right: "KeyH", dash: "KeyT" },
-];
-const GAMEPAD_LEFT_TRIGGER = 6;
-const GAMEPAD_RIGHT_TRIGGER = 7;
-const GAMEPAD_A_BUTTON = 0;
-const GAMEPAD_PRESS_THRESHOLD = 0.5;
-const MENU_SETTINGS_STORAGE_KEY = "achtung-die-kugel.menu-settings.v1";
 
 class InputManager {
   constructor() {
@@ -46,6 +34,7 @@ class InputManager {
         "ArrowRight",
         "ArrowUp",
         "ArrowDown",
+        "Backspace",
         "Space",
         "Digit0",
         "Digit1",
@@ -103,12 +92,12 @@ class InputManager {
   }
 
   getGamepadTurn(gamepadIndex) {
-    const left = this.getGamepadButtonValue(gamepadIndex, GAMEPAD_LEFT_TRIGGER);
-    const right = this.getGamepadButtonValue(gamepadIndex, GAMEPAD_RIGHT_TRIGGER);
+    const left = this.getGamepadButtonValue(gamepadIndex, GAMEPAD.LEFT_TRIGGER);
+    const right = this.getGamepadButtonValue(gamepadIndex, GAMEPAD.RIGHT_TRIGGER);
     return THREE.MathUtils.clamp(left - right, -1, 1);
   }
 
-  consumeGamepadButtonPress(gamepadIndex, buttonIndex, threshold = GAMEPAD_PRESS_THRESHOLD) {
+  consumeGamepadButtonPress(gamepadIndex, buttonIndex, threshold = GAMEPAD.PRESS_THRESHOLD) {
     const key = `${gamepadIndex}:${buttonIndex}`;
     const current = this.getGamepadButtonValue(gamepadIndex, buttonIndex);
     const prev = this.gamepadPrevButtonValues.get(key) ?? 0;
@@ -460,42 +449,16 @@ class SphereSnakeGame {
     this.clock = new THREE.Clock();
     this.input = new InputManager();
     this.isMobile = this.detectMobile();
-    this.mobilePointerSides = new Map();
     this.mobileMenuNumberSelection = null;
+    this.mobileMenuBack = false;
     this.mobileMenuAdvance = false;
     this.mobileUseSaved = false;
+    this.mobileTurnStates = new Map();
+    this.menuControlPreviewEls = [];
 
-    this.config = {
-      worldRadius: 24,
-      speed: 9,
-      turnRate: 2.05,
-      bodyRadius: 0.36,
-      headRadius: 0.62,
-      collisionRadius: 0.62,
-      safeTailIgnoreCount: 18,
-      cameraDistance: 10.2,
-      cameraHeight: 6.8,
-      gapIntervalMin: 1.3,
-      gapIntervalMax: 2.9,
-      gapDurationMin: 0.16,
-      gapDurationMax: 0.31,
-      botSimSteps: 22,
-      botSimDt: 0.12,
-      fadeDuration: 2,
-      spawnGraceDuration: 2,
-      scorePerHit: 1,
-      dashCooldown: 5,
-      dashDistance: 5.4,
-      dashGapDuration: 0.34,
-      dashScreenFlash: 0.16,
-    };
+    this.config = { ...GAME_CONFIG };
 
-    this.menu = {
-      humans: 2,
-      bots: 0,
-      continuous: false,
-      jumpMode: false,
-    };
+    this.menu = { ...MENU_DEFAULTS };
     this.savedMenuSettings = this.loadSavedMenuSettings();
 
     this.state = GAME_STATE.MENU_PLAYERS;
@@ -508,7 +471,7 @@ class SphereSnakeGame {
     this.initCelebrationSystem();
     this.initDashEffects();
     this.initMobileControls();
-    this.initMobileSteering();
+    this.initMobileSteeringControls();
     this.syncOverlay();
 
     window.addEventListener("resize", () => this.onResize());
@@ -596,71 +559,28 @@ class SphereSnakeGame {
   }
 
   initMobileControls() {
-    this.mobileControlsEl = document.createElement("div");
-    this.mobileControlsEl.className = "mobile-controls";
-    this.overlay.appendChild(this.mobileControlsEl);
+    this.mobileMenuControlsEl = document.createElement("div");
+    this.mobileMenuControlsEl.className = "mobile-controls";
+    this.overlay.appendChild(this.mobileMenuControlsEl);
+
+    this.mobileSteeringEl = document.createElement("div");
+    this.mobileSteeringEl.className = "mobile-steering";
+    document.body.appendChild(this.mobileSteeringEl);
   }
 
-  initMobileSteering() {
+  initMobileSteeringControls() {
     if (!this.isMobile) {
       return;
     }
-
-    const updatePointerSide = (event) => {
-      if (!this.mobilePointerSides.has(event.pointerId)) {
-        return;
-      }
-      const side = event.clientX < window.innerWidth * 0.5 ? "left" : "right";
-      this.mobilePointerSides.set(event.pointerId, side);
-    };
-
-    this.canvas.addEventListener(
-      "pointerdown",
-      (event) => {
-        if (this.state !== GAME_STATE.RUNNING) {
-          return;
-        }
-        const side = event.clientX < window.innerWidth * 0.5 ? "left" : "right";
-        this.mobilePointerSides.set(event.pointerId, side);
-        if (event.cancelable) {
-          event.preventDefault();
-        }
-      },
-      { passive: false },
-    );
-    this.canvas.addEventListener(
-      "pointermove",
-      (event) => {
-        updatePointerSide(event);
-        if (this.mobilePointerSides.has(event.pointerId) && event.cancelable) {
-          event.preventDefault();
-        }
-      },
-      { passive: false },
-    );
-    this.canvas.addEventListener("pointerup", (event) => {
-      this.mobilePointerSides.delete(event.pointerId);
-    });
-    this.canvas.addEventListener("pointercancel", (event) => {
-      this.mobilePointerSides.delete(event.pointerId);
-    });
   }
 
   getMobileTurnForPlayer(player) {
-    if (!this.isMobile || player.id !== 0) {
+    if (!this.isMobile || player.isBot || player.id > 1) {
       return 0;
     }
-
-    let hasLeft = false;
-    let hasRight = false;
-    for (const side of this.mobilePointerSides.values()) {
-      if (side === "left") {
-        hasLeft = true;
-      } else if (side === "right") {
-        hasRight = true;
-      }
-    }
-
+    const state = this.mobileTurnStates.get(player.id) || { left: false, right: false };
+    const hasLeft = state.left;
+    const hasRight = state.right;
     if (hasLeft && !hasRight) {
       return 1;
     }
@@ -671,18 +591,18 @@ class SphereSnakeGame {
   }
 
   setMobileMenuButtons(buttons) {
-    if (!this.mobileControlsEl) {
+    if (!this.mobileMenuControlsEl) {
       return;
     }
 
     if (!this.isMobile || buttons.length === 0) {
-      this.mobileControlsEl.innerHTML = "";
-      this.mobileControlsEl.style.display = "none";
+      this.mobileMenuControlsEl.innerHTML = "";
+      this.mobileMenuControlsEl.style.display = "none";
       return;
     }
 
-    this.mobileControlsEl.style.display = "flex";
-    this.mobileControlsEl.innerHTML = "";
+    this.mobileMenuControlsEl.style.display = "flex";
+    this.mobileMenuControlsEl.innerHTML = "";
 
     for (const button of buttons) {
       const el = document.createElement("button");
@@ -692,13 +612,80 @@ class SphereSnakeGame {
       el.addEventListener("click", () => {
         if (button.kind === "number") {
           this.mobileMenuNumberSelection = button.value;
+        } else if (button.kind === "back") {
+          this.mobileMenuBack = true;
         } else if (button.kind === "advance") {
           this.mobileMenuAdvance = true;
         } else if (button.kind === "saved") {
           this.mobileUseSaved = true;
         }
       });
-      this.mobileControlsEl.appendChild(el);
+      this.mobileMenuControlsEl.appendChild(el);
+    }
+  }
+
+  setMobileSteeringControls() {
+    if (!this.mobileSteeringEl) {
+      return;
+    }
+
+    if (!this.isMobile || this.state !== GAME_STATE.RUNNING) {
+      this.mobileSteeringEl.style.display = "none";
+      this.mobileSteeringEl.innerHTML = "";
+      this.mobileTurnStates.clear();
+      return;
+    }
+
+    const humanPlayers = this.players.filter((player) => !player.isBot).slice(0, 2);
+    if (humanPlayers.length === 0) {
+      this.mobileSteeringEl.style.display = "none";
+      this.mobileSteeringEl.innerHTML = "";
+      this.mobileTurnStates.clear();
+      return;
+    }
+
+    this.mobileSteeringEl.style.display = "grid";
+    this.mobileSteeringEl.classList.toggle("two-player", humanPlayers.length === 2);
+    this.mobileSteeringEl.innerHTML = "";
+
+    const bindHold = (buttonEl, playerId, side) => {
+      const setPressed = (pressed) => {
+        const current = this.mobileTurnStates.get(playerId) || { left: false, right: false };
+        current[side] = pressed;
+        this.mobileTurnStates.set(playerId, current);
+      };
+      buttonEl.addEventListener("pointerdown", (event) => {
+        setPressed(true);
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+      });
+      buttonEl.addEventListener("pointerup", () => setPressed(false));
+      buttonEl.addEventListener("pointercancel", () => setPressed(false));
+      buttonEl.addEventListener("pointerleave", () => setPressed(false));
+    };
+
+    for (const player of humanPlayers) {
+      this.mobileTurnStates.set(player.id, { left: false, right: false });
+
+      const group = document.createElement("div");
+      group.className = "mobile-steer-group";
+
+      const leftBtn = document.createElement("button");
+      leftBtn.type = "button";
+      leftBtn.className = "mobile-steer-btn";
+      leftBtn.textContent = humanPlayers.length === 1 ? "LEFT" : `${player.name} L`;
+      bindHold(leftBtn, player.id, "left");
+
+      const rightBtn = document.createElement("button");
+      rightBtn.type = "button";
+      rightBtn.className = "mobile-steer-btn";
+      rightBtn.textContent = humanPlayers.length === 1 ? "RIGHT" : `${player.name} R`;
+      bindHold(rightBtn, player.id, "right");
+
+      group.appendChild(leftBtn);
+      group.appendChild(rightBtn);
+      this.mobileSteeringEl.appendChild(group);
     }
   }
 
@@ -741,16 +728,22 @@ class SphereSnakeGame {
         respawnTimer: 0,
         spawnGraceTimer: this.config.spawnGraceDuration,
           turnInput: 0,
-          dashCooldown: this.config.dashCooldown,
-          dashRequested: false,
-          dashFlashTimer: 0,
-          eyesCrossed: false,
-          eyeTime: Math.random() * Math.PI * 2,
-          pos: new THREE.Vector3(),
-          up: new THREE.Vector3(),
-          forward: new THREE.Vector3(),
-          right: new THREE.Vector3(),
-        });
+        dashCooldown: this.config.dashCooldown,
+        dashRequested: false,
+        dashFlashTimer: 0,
+        eyesCrossed: false,
+        eyeTime: Math.random() * Math.PI * 2,
+        blinkTimer: 1.2 + Math.random() * 2.2,
+        blinkProgress: 0,
+        blinkDuration: 0.1,
+        blinkPendingSecond: false,
+        deathCameraTime: 0,
+        deathCameraDir: Math.random() < 0.5 ? -1 : 1,
+        pos: new THREE.Vector3(),
+        up: new THREE.Vector3(),
+        forward: new THREE.Vector3(),
+        right: new THREE.Vector3(),
+      });
 
       this.attachGooglyEyes(this.players[this.players.length - 1]);
     }
@@ -791,6 +784,12 @@ class SphereSnakeGame {
     player.dashFlashTimer = 0;
     player.eyesCrossed = false;
     player.eyeTime = Math.random() * Math.PI * 2;
+    player.blinkTimer = 1.2 + Math.random() * 2.2;
+    player.blinkProgress = 0;
+    player.blinkDuration = 0.1;
+    player.blinkPendingSecond = false;
+    player.deathCameraTime = 0;
+    player.deathCameraDir = Math.random() < 0.5 ? -1 : 1;
     this.updateHeadVisuals(player, 0);
     this.updateCamera(player);
   }
@@ -810,53 +809,56 @@ class SphereSnakeGame {
 
   syncOverlay() {
     this.overlay.classList.remove("hidden");
-    const controls = this.getTitleControlsText();
+    this.clearMenuControlPreview();
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
-      this.subtitle.textContent = `Choose human players (1-4): ${this.menu.humans}`;
-      const enterHint = this.savedMenuSettings ? "\nPress Enter to use last saved settings." : "";
-      this.hint.textContent = `Press 1-4 to choose humans.\nPress Space to choose bots.${enterHint}\n\n${controls}`;
+      const maxHumans = this.isMobile ? 2 : 4;
+      this.subtitle.textContent = `Players: ${this.menu.humans}`;
+      this.hint.textContent = `Press ${maxHumans === 2 ? "1-2" : "1-4"}`;
       this.setMobileMenuButtons([
         { kind: "number", value: 1, label: "1" },
         { kind: "number", value: 2, label: "2" },
-        { kind: "number", value: 3, label: "3" },
-        { kind: "number", value: 4, label: "4" },
-        ...(this.savedMenuSettings ? [{ kind: "saved", label: "Use Saved" }] : []),
-        { kind: "advance", label: "Continue" },
+        ...(maxHumans >= 3 ? [{ kind: "number", value: 3, label: "3" }] : []),
+        ...(maxHumans >= 4 ? [{ kind: "number", value: 4, label: "4" }] : []),
       ]);
+      this.setMobileSteeringControls();
       return;
     }
 
     if (this.state === GAME_STATE.MENU_BOTS) {
       const maxBots = 4 - this.menu.humans;
       this.subtitle.textContent = `Choose bots (0-${maxBots}): ${this.menu.bots}`;
-      this.hint.textContent = `Press number keys for bots.\nPress Space to choose mode.\n\n${controls}`;
+      this.hint.textContent = "Press number\nBackspace: back";
       this.setMobileMenuButtons(
-        [...Array(maxBots + 1).keys()].map((value) => ({ kind: "number", value, label: `${value}` })).concat([{ kind: "advance", label: "Continue" }]),
+        [{ kind: "back", label: "Back" }].concat([...Array(maxBots + 1).keys()].map((value) => ({ kind: "number", value, label: `${value}` }))),
       );
+      this.setMobileSteeringControls();
       return;
     }
 
     if (this.state === GAME_STATE.MENU_MODE) {
       this.subtitle.textContent = `Mode: ${this.menu.continuous ? "Continuous" : "Normal"}`;
-      this.hint.textContent = `Press 0 for Normal, 1 for Continuous.\nPress Space to choose jump mode.\n\n${controls}`;
+      this.hint.textContent = "1 Normal, 2 Continuous\nBackspace: back";
       this.setMobileMenuButtons([
-        { kind: "number", value: 0, label: "Normal" },
-        { kind: "number", value: 1, label: "Continuous" },
-        { kind: "advance", label: "Continue" },
+        { kind: "back", label: "Back" },
+        { kind: "number", value: 1, label: "1" },
+        { kind: "number", value: 2, label: "2" },
       ]);
+      this.showMenuControlPreview();
+      this.setMobileSteeringControls();
       return;
     }
 
     if (this.state === GAME_STATE.MENU_JUMP) {
       this.subtitle.textContent = `Jump Mode: ${this.menu.jumpMode ? "On" : "Off"}`;
-      this.hint.textContent =
-        `Press 0 for no jump mode, 1 for jump mode.\nPress Space to start.\nDash keys: P1 UpArrow, P2 W, P3 I, P4 T.\n\n${controls}`;
+      this.hint.textContent = "1 No Jump, 2 Jump\nBackspace: back";
       this.setMobileMenuButtons([
-        { kind: "number", value: 0, label: "Jump Off" },
-        { kind: "number", value: 1, label: "Jump On" },
-        { kind: "advance", label: "Start" },
+        { kind: "back", label: "Back" },
+        { kind: "number", value: 1, label: "1" },
+        { kind: "number", value: 2, label: "2" },
       ]);
+      this.showMenuControlPreview();
+      this.setMobileSteeringControls();
       return;
     }
 
@@ -864,6 +866,7 @@ class SphereSnakeGame {
       this.subtitle.textContent = "Round Over";
       this.hint.textContent = "Press Space for next round.";
       this.setMobileMenuButtons([{ kind: "advance", label: "Next Round" }]);
+      this.setMobileSteeringControls();
       return;
     }
 
@@ -877,21 +880,8 @@ class SphereSnakeGame {
       this.subtitle.textContent = `Match Over - ${winner ? winner.name : "Winner"}`;
       this.hint.textContent = `${lines}\n\nPress Space for new match.`;
       this.setMobileMenuButtons([{ kind: "advance", label: "New Match" }]);
+      this.setMobileSteeringControls();
     }
-  }
-
-  getTitleControlsText() {
-    const humanCount = THREE.MathUtils.clamp(this.menu.humans, 1, CONTROL_SCHEMES.length);
-    const lines = [];
-    for (let i = 0; i < humanCount; i += 1) {
-      const control = CONTROL_SCHEMES[i];
-      lines.push(
-        `${control.label}: Keyboard ${this.codeLabel(control.left)}/${this.codeLabel(control.right)} steer, ${this.codeLabel(control.dash)} jump | Gamepad ${
-          i + 1
-        }: LT/RT steer (analog), A jump`,
-      );
-    }
-    return lines.join("\n");
   }
 
   codeLabel(code) {
@@ -915,18 +905,18 @@ class SphereSnakeGame {
   attachGooglyEyes(player) {
     const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     const pupilMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-    const whiteGeo = new THREE.SphereGeometry(0.15, 10, 10);
-    const pupilGeo = new THREE.SphereGeometry(0.06, 8, 8);
+    const whiteGeo = new THREE.SphereGeometry(0.18, 10, 10);
+    const pupilGeo = new THREE.SphereGeometry(0.068, 8, 8);
 
     const leftEye = new THREE.Mesh(whiteGeo, whiteMat);
     const rightEye = new THREE.Mesh(whiteGeo, whiteMat);
-    leftEye.position.set(-0.22, 0.16, 0.54);
-    rightEye.position.set(0.22, 0.16, 0.54);
+    leftEye.position.set(-0.23, 0.17, 0.56);
+    rightEye.position.set(0.23, 0.17, 0.56);
 
     const leftPupil = new THREE.Mesh(pupilGeo, pupilMat);
     const rightPupil = new THREE.Mesh(pupilGeo, pupilMat);
-    leftPupil.position.set(0, 0, 0.11);
-    rightPupil.position.set(0, 0, 0.11);
+    leftPupil.position.set(0, 0, 0.12);
+    rightPupil.position.set(0, 0, 0.12);
 
     leftEye.add(leftPupil);
     rightEye.add(rightPupil);
@@ -935,6 +925,8 @@ class SphereSnakeGame {
 
     player.leftPupil = leftPupil;
     player.rightPupil = rightPupil;
+    player.leftEye = leftEye;
+    player.rightEye = rightEye;
   }
 
   updateHeadVisuals(player, dt) {
@@ -948,6 +940,36 @@ class SphereSnakeGame {
 
     if (!player.leftPupil || !player.rightPupil) {
       return;
+    }
+
+    if (player.leftEye && player.rightEye) {
+      if (dt > 0) {
+        if (player.blinkProgress > 0) {
+          player.blinkProgress = Math.min(1, player.blinkProgress + dt / player.blinkDuration);
+          if (player.blinkProgress >= 1) {
+            if (player.blinkPendingSecond) {
+              player.blinkPendingSecond = false;
+              player.blinkProgress = 0.0001;
+              player.blinkDuration = 0.08;
+            } else {
+              player.blinkProgress = 0;
+              player.blinkTimer = 1.1 + Math.random() * 3.4;
+            }
+          }
+        } else {
+          player.blinkTimer -= dt;
+          if (player.blinkTimer <= 0) {
+            player.blinkProgress = 0.0001;
+            player.blinkDuration = 0.08 + Math.random() * 0.05;
+            player.blinkPendingSecond = Math.random() < 0.16;
+          }
+        }
+      }
+
+      const blinkAmount = player.blinkProgress > 0 ? Math.sin(player.blinkProgress * Math.PI) : 0;
+      const eyeScaleY = 1 - blinkAmount * 0.92;
+      player.leftEye.scale.set(1, eyeScaleY, 1);
+      player.rightEye.scale.set(1, eyeScaleY, 1);
     }
 
     if (player.eyesCrossed) {
@@ -976,6 +998,8 @@ class SphereSnakeGame {
     this.stopCelebration();
     this.state = GAME_STATE.RUNNING;
     this.overlay.classList.add("hidden");
+    this.clearMenuControlPreview();
+    this.setMobileSteeringControls();
     this.clock.getDelta();
   }
 
@@ -983,10 +1007,16 @@ class SphereSnakeGame {
     this.resetRound();
     this.state = GAME_STATE.RUNNING;
     this.overlay.classList.add("hidden");
+    this.clearMenuControlPreview();
+    this.setMobileSteeringControls();
     this.clock.getDelta();
   }
 
   updateMenu() {
+    if (this.handleMenuBack()) {
+      return;
+    }
+
     if (this.state === GAME_STATE.MENU_PLAYERS) {
       const enterPressed = this.input.consumePress("Enter") || this.input.consumePress("NumpadEnter");
       const useSavedPressed = this.mobileUseSaved;
@@ -999,11 +1029,13 @@ class SphereSnakeGame {
     }
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
-      const selected = this.readNumberKey(1, 4);
+      const selected = this.readNumberKey(1, this.isMobile ? 2 : 4);
       if (selected !== null) {
         this.menu.humans = selected;
         this.menu.bots = Math.min(this.menu.bots, 4 - selected);
+        this.state = GAME_STATE.MENU_BOTS;
         this.syncOverlay();
+        return;
       }
     }
 
@@ -1012,72 +1044,88 @@ class SphereSnakeGame {
       const selected = this.readNumberKey(0, maxBots);
       if (selected !== null) {
         this.menu.bots = selected;
+        this.state = GAME_STATE.MENU_MODE;
         this.syncOverlay();
+        return;
       }
     }
 
     if (this.state === GAME_STATE.MENU_MODE) {
-      if (this.input.consumePress("Digit0") || this.input.consumePress("Numpad0")) {
+      const selected = this.readNumberKey(1, 2);
+      if (selected === 1) {
         this.menu.continuous = false;
+        this.state = GAME_STATE.MENU_JUMP;
         this.syncOverlay();
+        return;
       }
-      if (this.input.consumePress("Digit1") || this.input.consumePress("Numpad1")) {
+      if (selected === 2) {
         this.menu.continuous = true;
+        this.state = GAME_STATE.MENU_JUMP;
         this.syncOverlay();
+        return;
       }
     }
 
     if (this.state === GAME_STATE.MENU_JUMP) {
-      if (this.input.consumePress("Digit0") || this.input.consumePress("Numpad0")) {
+      const selected = this.readNumberKey(1, 2);
+      if (selected === 1) {
         this.menu.jumpMode = false;
-        this.syncOverlay();
+        this.startMatch();
+        return;
       }
-      if (this.input.consumePress("Digit1") || this.input.consumePress("Numpad1")) {
+      if (selected === 2) {
         this.menu.jumpMode = true;
-        this.syncOverlay();
+        this.startMatch();
+        return;
       }
-    }
-
-    const advancePressed = this.input.consumePress("Space") || this.mobileMenuAdvance;
-    this.mobileMenuAdvance = false;
-    if (!advancePressed) {
-      return;
-    }
-
-    if (this.state === GAME_STATE.MENU_PLAYERS) {
-      this.state = GAME_STATE.MENU_BOTS;
-      this.syncOverlay();
-      return;
-    }
-
-    if (this.state === GAME_STATE.MENU_BOTS) {
-      this.state = GAME_STATE.MENU_MODE;
-      this.syncOverlay();
-      return;
-    }
-
-    if (this.state === GAME_STATE.MENU_MODE) {
-      this.state = GAME_STATE.MENU_JUMP;
-      this.syncOverlay();
-      return;
-    }
-
-    if (this.state === GAME_STATE.MENU_JUMP) {
-      this.startMatch();
-      return;
     }
 
     if (this.state === GAME_STATE.ROUND_OVER) {
+      const next = this.input.consumePress("Space") || this.mobileMenuAdvance;
+      this.mobileMenuAdvance = false;
+      if (!next) {
+        return;
+      }
       this.startNextRound();
       return;
     }
 
     if (this.state === GAME_STATE.MATCH_OVER) {
+      const restart = this.input.consumePress("Space") || this.mobileMenuAdvance;
+      this.mobileMenuAdvance = false;
+      if (!restart) {
+        return;
+      }
       this.matchWinnerId = null;
       this.stopCelebration();
       this.state = GAME_STATE.MENU_PLAYERS;
       this.syncOverlay();
     }
+  }
+
+  handleMenuBack() {
+    const pressed = this.input.consumePress("Backspace") || this.mobileMenuBack;
+    this.mobileMenuBack = false;
+    if (!pressed) {
+      return false;
+    }
+
+    if (this.state === GAME_STATE.MENU_BOTS) {
+      this.state = GAME_STATE.MENU_PLAYERS;
+      this.syncOverlay();
+      return true;
+    }
+    if (this.state === GAME_STATE.MENU_MODE) {
+      this.state = GAME_STATE.MENU_BOTS;
+      this.syncOverlay();
+      return true;
+    }
+    if (this.state === GAME_STATE.MENU_JUMP) {
+      this.state = GAME_STATE.MENU_MODE;
+      this.syncOverlay();
+      return true;
+    }
+    return false;
   }
 
   readNumberKey(min, max) {
@@ -1133,7 +1181,8 @@ class SphereSnakeGame {
     const continuous = Boolean(candidate.continuous);
     const jumpMode = Boolean(candidate.jumpMode);
 
-    if (!Number.isInteger(humans) || humans < 1 || humans > 4) {
+    const maxHumans = this.isMobile ? 2 : 4;
+    if (!Number.isInteger(humans) || humans < 1 || humans > maxHumans) {
       return null;
     }
     if (!Number.isInteger(bots) || bots < 0) {
@@ -1149,10 +1198,51 @@ class SphereSnakeGame {
   }
 
   applyMenuSettings(settings) {
-    this.menu.humans = settings.humans;
-    this.menu.bots = settings.bots;
+    this.menu.humans = this.isMobile ? Math.min(settings.humans, 2) : settings.humans;
+    this.menu.bots = Math.min(settings.bots, 4 - this.menu.humans);
     this.menu.continuous = settings.continuous;
     this.menu.jumpMode = settings.jumpMode;
+  }
+
+  clearMenuControlPreview() {
+    for (const el of this.menuControlPreviewEls) {
+      el.remove();
+    }
+    this.menuControlPreviewEls.length = 0;
+  }
+
+  showMenuControlPreview() {
+    this.clearMenuControlPreview();
+    const total = this.menu.humans + this.menu.bots;
+    const humanCount = this.menu.humans;
+    const viewports = this.getViewportsForCount(total);
+
+    for (let i = 0; i < humanCount; i += 1) {
+      const control = CONTROL_SCHEMES[i];
+      const text = this.menu.jumpMode
+        ? `${control.label} ${this.codeLabel(control.left)}/${this.codeLabel(control.right)} + ${this.codeLabel(control.dash)}`
+        : `${control.label} ${this.codeLabel(control.left)}/${this.codeLabel(control.right)}`;
+      const el = document.createElement("div");
+      el.className = "viewport-label menu-control-preview";
+      el.style.borderColor = `#${PLAYER_COLORS[i].toString(16).padStart(6, "0")}`;
+      el.textContent = text;
+      this.viewportLabels.appendChild(el);
+      this.menuControlPreviewEls.push(el);
+
+      const v = viewports[i];
+      if (!v) {
+        continue;
+      }
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const vx = Math.floor(v.x * width);
+      const vy = Math.floor(v.y * height);
+      const vw = Math.floor(v.w * width);
+      const vh = Math.floor(v.h * height);
+      el.style.left = `${vx + 8}px`;
+      el.style.top = `${height - vy - vh + 8}px`;
+      el.style.maxWidth = `${Math.max(100, vw - 16)}px`;
+    }
   }
 
   saveMenuSettings() {
@@ -1194,7 +1284,7 @@ class SphereSnakeGame {
         const mobileTurn = this.getMobileTurnForPlayer(player);
         player.turnInput = THREE.MathUtils.clamp(keyboardTurn + gamepadTurn + mobileTurn, -1, 1);
 
-        const gamepadJumpPressed = this.input.consumeGamepadButtonPress(player.id, GAMEPAD_A_BUTTON);
+        const gamepadJumpPressed = this.input.consumeGamepadButtonPress(player.id, GAMEPAD.JUMP_BUTTON);
         const keyboardJumpPressed = this.input.consumePress(player.control.dash);
         if (this.menu.jumpMode && (keyboardJumpPressed || gamepadJumpPressed)) {
           player.dashRequested = true;
@@ -1253,6 +1343,8 @@ class SphereSnakeGame {
     for (const player of this.players) {
       if (player.status === PLAYER_STATUS.ACTIVE) {
         this.updateCamera(player);
+      } else if (player.status === PLAYER_STATUS.OUT || player.status === PLAYER_STATUS.RESPAWNING) {
+        this.updateDeathCamera(player, dt);
       }
     }
 
@@ -1330,6 +1422,8 @@ class SphereSnakeGame {
 
   handleCrash(player) {
     player.eyesCrossed = true;
+    player.deathCameraTime = 0;
+    player.deathCameraDir = Math.random() < 0.5 ? -1 : 1;
     this.updateHeadVisuals(player, 0);
 
     const survivors = this.players.filter((p) => p.status === PLAYER_STATUS.ACTIVE && p.id !== player.id);
@@ -1558,8 +1652,25 @@ class SphereSnakeGame {
     player.camera.lookAt(player.pos);
   }
 
-  getViewports() {
-    const n = this.players.length;
+  updateDeathCamera(player, dt) {
+    player.deathCameraTime += dt;
+    const t = Math.min(1, player.deathCameraTime / 0.7);
+    const ease = 1 - Math.pow(1 - t, 3);
+    const swingAngle = ease * 2.55 * player.deathCameraDir;
+
+    const orbit = player.forward
+      .clone()
+      .multiplyScalar(-this.config.cameraDistance * 0.88)
+      .applyAxisAngle(player.up, swingAngle);
+    const up = player.up.clone().multiplyScalar(this.config.cameraHeight * 0.68);
+    const desired = player.pos.clone().add(orbit).add(up);
+
+    player.camera.position.copy(desired);
+    player.camera.up.copy(player.up);
+    player.camera.lookAt(player.pos.clone().addScaledVector(player.up, 0.1));
+  }
+
+  getViewportsForCount(n) {
     if (n <= 1) {
       return [{ x: 0, y: 0, w: 1, h: 1 }];
     }
@@ -1576,6 +1687,10 @@ class SphereSnakeGame {
       { x: 0, y: 0, w: 0.5, h: 0.5 },
       { x: 0.5, y: 0, w: 0.5, h: 0.5 },
     ].slice(0, n);
+  }
+
+  getViewports() {
+    return this.getViewportsForCount(this.players.length);
   }
 
   refreshViewportLabels() {
@@ -1640,7 +1755,12 @@ class SphereSnakeGame {
       return;
     }
 
-    this.viewportLabels.style.display = this.state === GAME_STATE.RUNNING || this.state === GAME_STATE.ROUND_OVER ? "block" : "none";
+    const showLabels =
+      this.state === GAME_STATE.RUNNING ||
+      this.state === GAME_STATE.ROUND_OVER ||
+      this.state === GAME_STATE.MENU_MODE ||
+      this.state === GAME_STATE.MENU_JUMP;
+    this.viewportLabels.style.display = showLabels ? "block" : "none";
 
     const viewports = this.getViewports();
     this.renderer.setScissorTest(true);
@@ -1706,6 +1826,9 @@ class SphereSnakeGame {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.spectatorCamera.aspect = window.innerWidth / window.innerHeight;
     this.spectatorCamera.updateProjectionMatrix();
+    if (this.state === GAME_STATE.MENU_MODE || this.state === GAME_STATE.MENU_JUMP) {
+      this.showMenuControlPreview();
+    }
   }
 
   run = () => {
