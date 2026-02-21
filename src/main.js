@@ -3,16 +3,24 @@ import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
 const GAME_STATE = {
   MENU_PLAYERS: "menu_players",
   MENU_BOTS: "menu_bots",
+  MENU_MODE: "menu_mode",
   RUNNING: "running",
   ROUND_OVER: "round_over",
+  MATCH_OVER: "match_over",
+};
+
+const PLAYER_STATUS = {
+  ACTIVE: "active",
+  OUT: "out",
+  RESPAWNING: "respawning",
 };
 
 const PLAYER_COLORS = [0xff3b30, 0x34c759, 0x0a84ff, 0xffd60a];
 const CONTROL_SCHEMES = [
-  { label: "P1: Arrow Left/Right", left: "ArrowLeft", right: "ArrowRight" },
-  { label: "P2: A / D", left: "KeyA", right: "KeyD" },
-  { label: "P3: J / L", left: "KeyJ", right: "KeyL" },
-  { label: "P4: F / H", left: "KeyF", right: "KeyH" },
+  { label: "P1", left: "ArrowLeft", right: "ArrowRight" },
+  { label: "P2", left: "KeyA", right: "KeyD" },
+  { label: "P3", left: "KeyJ", right: "KeyL" },
+  { label: "P4", left: "KeyF", right: "KeyH" },
 ];
 
 class InputManager {
@@ -43,6 +51,7 @@ class InputManager {
         "Numpad3",
         "Numpad4",
       ];
+
       if (block.includes(event.code)) {
         event.preventDefault();
       }
@@ -65,70 +74,8 @@ class InputManager {
     return false;
   }
 
-  consumeAnyPress(codes) {
-    for (const code of codes) {
-      if (this.consumePress(code)) {
-        return code;
-      }
-    }
-    return null;
-  }
-
   endFrame() {
     this.justPressed.clear();
-  }
-}
-
-class DynamicInstancedSegment {
-  constructor(scene, geometry, material, initialCapacity = 512) {
-    this.scene = scene;
-    this.geometry = geometry;
-    this.material = material;
-    this.capacity = initialCapacity;
-    this.count = 0;
-    this.temp = new THREE.Matrix4();
-
-    this.mesh = new THREE.InstancedMesh(this.geometry, this.material, this.capacity);
-    this.mesh.frustumCulled = false;
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.count = 0;
-    this.scene.add(this.mesh);
-  }
-
-  addPoint(position) {
-    if (this.count >= this.capacity) {
-      this.expand();
-    }
-
-    this.temp.makeTranslation(position.x, position.y, position.z);
-    this.mesh.setMatrixAt(this.count, this.temp);
-    this.count += 1;
-    this.mesh.count = this.count;
-    this.mesh.instanceMatrix.needsUpdate = true;
-  }
-
-  expand() {
-    const nextCapacity = this.capacity * 2;
-    const nextMesh = new THREE.InstancedMesh(this.geometry, this.material, nextCapacity);
-    nextMesh.frustumCulled = false;
-    nextMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-
-    for (let i = 0; i < this.count; i += 1) {
-      this.mesh.getMatrixAt(i, this.temp);
-      nextMesh.setMatrixAt(i, this.temp);
-    }
-
-    nextMesh.count = this.count;
-    nextMesh.instanceMatrix.needsUpdate = true;
-
-    this.scene.remove(this.mesh);
-    this.mesh = nextMesh;
-    this.capacity = nextCapacity;
-    this.scene.add(this.mesh);
-  }
-
-  dispose() {
-    this.scene.remove(this.mesh);
   }
 }
 
@@ -136,17 +83,19 @@ class SnakeTrail {
   constructor(scene, color, config) {
     this.scene = scene;
     this.config = config;
+    this.baseColor = color;
+
     this.root = new THREE.Group();
     this.scene.add(this.root);
 
-    this.ballGeometry = new THREE.SphereGeometry(config.bodyRadius, 10, 10);
-    this.material = new THREE.MeshBasicMaterial({ color });
+    this.material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 });
 
-    this.segments = [];
-    this.currentSegment = null;
+    this.meshSegments = [];
+    this.currentMesh = null;
+    this.currentPoints = [];
     this.solidPoints = [];
     this.lastPlacedPoint = null;
-    this.sampleSpacing = config.bodyRadius * 0.95;
+    this.sampleSpacing = config.bodyRadius * 0.9;
 
     this.inGap = false;
     this.timeToNextGap = this.rand(config.gapIntervalMin, config.gapIntervalMax);
@@ -154,17 +103,24 @@ class SnakeTrail {
   }
 
   reset() {
-    for (const segment of this.segments) {
-      segment.dispose();
+    for (const mesh of this.meshSegments) {
+      this.root.remove(mesh);
+      mesh.geometry.dispose();
     }
-    this.segments.length = 0;
-    this.currentSegment = null;
+
+    this.meshSegments.length = 0;
+    this.currentMesh = null;
+    this.currentPoints.length = 0;
     this.solidPoints.length = 0;
     this.lastPlacedPoint = null;
 
     this.inGap = false;
     this.timeToNextGap = this.rand(this.config.gapIntervalMin, this.config.gapIntervalMax);
     this.gapRemaining = 0;
+
+    this.material.color.setHex(this.baseColor);
+    this.material.opacity = 1;
+    this.root.visible = true;
   }
 
   addPoint(point, dt) {
@@ -173,9 +129,10 @@ class SnakeTrail {
       this.gapRemaining -= dt;
       if (this.gapRemaining <= 0) {
         this.inGap = false;
-        this.currentSegment = null;
+        this.currentMesh = null;
+        this.currentPoints.length = 0;
       }
-      return false;
+      return;
     }
 
     this.timeToNextGap -= dt;
@@ -183,27 +140,22 @@ class SnakeTrail {
       this.inGap = true;
       this.gapRemaining = this.rand(this.config.gapDurationMin, this.config.gapDurationMax);
       this.timeToNextGap = this.rand(this.config.gapIntervalMin, this.config.gapIntervalMax);
-      this.currentSegment = null;
+      this.currentMesh = null;
+      this.currentPoints.length = 0;
       this.lastPlacedPoint = point.clone();
-      return false;
-    }
-
-    if (!this.currentSegment) {
-      this.currentSegment = new DynamicInstancedSegment(this.root, this.ballGeometry, this.material);
-      this.segments.push(this.currentSegment);
+      return;
     }
 
     if (!this.lastPlacedPoint) {
-      this.currentSegment.addPoint(point);
-      this.solidPoints.push(point.clone());
+      this.pushSolidPoint(point.clone());
       this.lastPlacedPoint = point.clone();
-      return true;
+      return;
     }
 
     const delta = point.clone().sub(this.lastPlacedPoint);
     const distance = delta.length();
     if (distance < this.sampleSpacing) {
-      return false;
+      return;
     }
 
     delta.normalize();
@@ -211,17 +163,57 @@ class SnakeTrail {
     while (traveled <= distance) {
       const sample = this.lastPlacedPoint.clone().addScaledVector(delta, traveled);
       sample.normalize().multiplyScalar(this.config.worldRadius + this.config.headRadius);
-      this.currentSegment.addPoint(sample);
-      this.solidPoints.push(sample);
+      this.pushSolidPoint(sample);
       traveled += this.sampleSpacing;
     }
     this.lastPlacedPoint.copy(point);
-    return true;
+  }
+
+  pushSolidPoint(point) {
+    this.currentPoints.push(point.clone());
+
+    if (this.currentPoints.length < 2) {
+      this.solidPoints.push(point.clone());
+      return;
+    }
+
+    const tubeSegments = Math.max(10, this.currentPoints.length * 2);
+    const geometry = new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3(this.currentPoints),
+      tubeSegments,
+      this.config.bodyRadius,
+      8,
+      false,
+    );
+
+    if (!this.currentMesh) {
+      this.currentMesh = new THREE.Mesh(geometry, this.material);
+      this.root.add(this.currentMesh);
+      this.meshSegments.push(this.currentMesh);
+    } else {
+      this.currentMesh.geometry.dispose();
+      this.currentMesh.geometry = geometry;
+    }
+
+    this.solidPoints.push(point.clone());
+  }
+
+  setFade(progress) {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    this.material.color.setHex(0xd9d9d9);
+    this.material.opacity = 1 - p;
+  }
+
+  hide() {
+    this.root.visible = false;
+  }
+
+  show() {
+    this.root.visible = true;
   }
 
   dispose() {
     this.reset();
-    this.ballGeometry.dispose();
     this.material.dispose();
     this.scene.remove(this.root);
   }
@@ -261,29 +253,28 @@ class BotBrain {
     };
 
     const simDt = this.config.botSimDt;
-    let minDist = Infinity;
-    const horizon = this.config.botSimSteps;
+    let minDist = 99999;
 
-    for (let step = 0; step < horizon; step += 1) {
+    for (let step = 0; step < this.config.botSimSteps; step += 1) {
       advanceOnSphere(sim, turn, simDt, this.config.turnRate, this.config.speed, this.config.worldRadius, this.config.headRadius);
 
-      const collision = hitsAnyTrail(sim.pos, players, this.config, player.id, true);
-      if (collision) {
-        return -10000 + step * 30;
+      if (hitsAnyTrail(sim.pos, players, this.config, player, true)) {
+        return -10000 + step * 25;
       }
 
       for (const other of players) {
-        if (other.id === player.id) {
+        if (other.id === player.id || other.status !== PLAYER_STATUS.ACTIVE) {
           continue;
         }
-        const prediction = predictedHeads.get(other.id)[step];
-        const dist = sim.pos.distanceTo(prediction);
-        minDist = Math.min(minDist, dist);
+        const predicted = predictedHeads.get(other.id);
+        if (!predicted || !predicted[step]) {
+          continue;
+        }
+        minDist = Math.min(minDist, sim.pos.distanceTo(predicted[step]));
       }
     }
 
-    const immediateSafety = this.localSafety(player, turn, players);
-    return minDist * 8 + immediateSafety * 4;
+    return minDist * 6 + this.localSafety(player, turn, players) * 4;
   }
 
   localSafety(player, turn, players) {
@@ -294,10 +285,9 @@ class BotBrain {
       right: player.right.clone(),
     };
 
-    const simDt = 0.08;
     for (let step = 0; step < 10; step += 1) {
-      advanceOnSphere(sim, turn, simDt, this.config.turnRate, this.config.speed, this.config.worldRadius, this.config.headRadius);
-      if (hitsAnyTrail(sim.pos, players, this.config, player.id, true)) {
+      advanceOnSphere(sim, turn, 0.08, this.config.turnRate, this.config.speed, this.config.worldRadius, this.config.headRadius);
+      if (hitsAnyTrail(sim.pos, players, this.config, player, true)) {
         return step - 10;
       }
     }
@@ -326,16 +316,20 @@ function advanceOnSphere(state, turn, dt, turnRate, speed, worldRadius, headRadi
   state.forward.crossVectors(state.up, state.right).normalize();
 }
 
-function hitsAnyTrail(point, players, config, playerId, includeOthers) {
+function hitsAnyTrail(point, players, config, selfPlayer, includeOthers) {
   const r2 = config.collisionRadius * config.collisionRadius;
 
   for (const player of players) {
-    if (!includeOthers && player.id !== playerId) {
+    if (!player.trailCollidable) {
+      continue;
+    }
+
+    if (!includeOthers && player.id !== selfPlayer.id) {
       continue;
     }
 
     const pts = player.trail.solidPoints;
-    const ownTailIgnore = player.id === playerId ? config.safeTailIgnoreCount : 0;
+    const ownTailIgnore = player.id === selfPlayer.id ? config.safeTailIgnoreCount : 0;
     const end = Math.max(0, pts.length - ownTailIgnore);
 
     for (let i = 0; i < end; i += 2) {
@@ -364,6 +358,9 @@ class SphereSnakeGame {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x04070d);
 
+    this.spectatorCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    this.spectatorCenter = new THREE.Vector3(0, this.config?.worldRadius || 24, 0);
+
     this.clock = new THREE.Clock();
     this.input = new InputManager();
 
@@ -377,26 +374,31 @@ class SphereSnakeGame {
       safeTailIgnoreCount: 18,
       cameraDistance: 10.2,
       cameraHeight: 6.8,
-      cameraLookAhead: 5.8,
       gapIntervalMin: 1.3,
       gapIntervalMax: 2.9,
       gapDurationMin: 0.16,
       gapDurationMax: 0.31,
       botSimSteps: 22,
       botSimDt: 0.12,
+      fadeDuration: 2,
+      scorePerHit: 1,
     };
 
     this.menu = {
       humans: 2,
       bots: 0,
+      continuous: false,
     };
 
     this.state = GAME_STATE.MENU_PLAYERS;
     this.players = [];
     this.botBrain = new BotBrain(this.config);
+    this.matchWinnerId = null;
+    this.celebration = null;
 
     this.initWorld();
-    this.syncMenuOverlay();
+    this.initCelebrationSystem();
+    this.syncOverlay();
 
     window.addEventListener("resize", () => this.onResize());
   }
@@ -421,7 +423,47 @@ class SphereSnakeGame {
     this.scene.add(grid);
   }
 
-  buildPlayers() {
+  initCelebrationSystem() {
+    this.celebrationGroup = new THREE.Group();
+    this.scene.add(this.celebrationGroup);
+
+    this.crownGroup = new THREE.Group();
+    this.celebrationGroup.add(this.crownGroup);
+
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(1.2, 0.25, 16, 40),
+      new THREE.MeshBasicMaterial({ color: 0xffd54f }),
+    );
+    ring.rotation.x = Math.PI / 2;
+    this.crownGroup.add(ring);
+
+    for (let i = 0; i < 8; i += 1) {
+      const spike = new THREE.Mesh(
+        new THREE.ConeGeometry(0.18, 0.7, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffc107 }),
+      );
+      const a = (i / 8) * Math.PI * 2;
+      spike.position.set(Math.cos(a) * 1.1, 0.45, Math.sin(a) * 1.1);
+      spike.lookAt(0, 1.1, 0);
+      this.crownGroup.add(spike);
+    }
+
+    this.sparkPool = [];
+    const sparkColors = [0xfff176, 0xff8a65, 0x4fc3f7, 0xce93d8];
+    for (let i = 0; i < 240; i += 1) {
+      const spark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.09 + Math.random() * 0.08, 8, 8),
+        new THREE.MeshBasicMaterial({ color: sparkColors[i % sparkColors.length], transparent: true, opacity: 0 }),
+      );
+      spark.visible = false;
+      this.celebrationGroup.add(spark);
+      this.sparkPool.push({ mesh: spark, velocity: new THREE.Vector3(), life: 0, maxLife: 0 });
+    }
+
+    this.celebrationGroup.visible = false;
+  }
+
+  createPlayers() {
     for (const player of this.players) {
       player.trail.dispose();
       this.scene.remove(player.headMesh);
@@ -448,12 +490,16 @@ class SphereSnakeGame {
       this.players.push({
         id: i,
         name: `P${i + 1}`,
-        color,
+        score: 0,
         isBot,
-        trail,
-        headMesh,
-        camera,
+        color,
         control: !isBot ? CONTROL_SCHEMES[i] : null,
+        camera,
+        headMesh,
+        trail,
+        trailCollidable: true,
+        status: PLAYER_STATUS.ACTIVE,
+        respawnTimer: 0,
         turnInput: 0,
         pos: new THREE.Vector3(),
         up: new THREE.Vector3(),
@@ -466,57 +512,103 @@ class SphereSnakeGame {
     this.refreshViewportLabels();
   }
 
+  spawnPlayer(player, angleHint = null) {
+    const attempts = 18;
+
+    for (let i = 0; i < attempts; i += 1) {
+      const angle = angleHint !== null && i === 0 ? angleHint : Math.random() * Math.PI * 2;
+      const up = new THREE.Vector3(Math.cos(angle), 0.26 + (Math.random() - 0.5) * 0.15, Math.sin(angle)).normalize();
+      const tangent = new THREE.Vector3(-Math.sin(angle), 0, Math.cos(angle)).normalize();
+
+      const pos = up.clone().multiplyScalar(this.config.worldRadius + this.config.headRadius);
+      if (!hitsAnyTrail(pos, this.players, this.config, player, true)) {
+        player.up.copy(up);
+        player.pos.copy(pos);
+        player.forward.copy(tangent).projectOnPlane(player.up).normalize();
+        player.right.crossVectors(player.forward, player.up).normalize();
+        break;
+      }
+    }
+
+    player.headMesh.visible = true;
+    player.headMesh.position.copy(player.pos);
+    player.trail.show();
+    player.trail.material.color.setHex(player.color);
+    player.trail.material.opacity = 1;
+    player.trailCollidable = true;
+    player.status = PLAYER_STATUS.ACTIVE;
+    player.respawnTimer = 0;
+    player.turnInput = 0;
+    this.updateCamera(player);
+  }
+
   resetRound() {
     const count = this.players.length;
 
     for (let i = 0; i < count; i += 1) {
       const player = this.players[i];
       player.trail.reset();
-
       const angle = (i / Math.max(1, count)) * Math.PI * 2;
-      const spawnUp = new THREE.Vector3(Math.cos(angle), 0.27, Math.sin(angle)).normalize();
-      const tangent = new THREE.Vector3(-Math.sin(angle), 0, Math.cos(angle)).normalize();
-
-      player.up.copy(spawnUp);
-      player.pos.copy(spawnUp).multiplyScalar(this.config.worldRadius + this.config.headRadius);
-      player.forward.copy(tangent).projectOnPlane(player.up).normalize();
-      player.right.crossVectors(player.forward, player.up).normalize();
-
-      player.headMesh.position.copy(player.pos);
-      this.updateCamera(player);
-      player.turnInput = 0;
+      this.spawnPlayer(player, angle);
     }
+
+    this.updateViewportLabels();
   }
 
-  syncMenuOverlay() {
+  syncOverlay() {
     this.overlay.classList.remove("hidden");
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
       this.subtitle.textContent = `Choose human players (1-4): ${this.menu.humans}`;
-      this.hint.textContent = "Press 1,2,3,4 to choose human players.\nThen press Space to choose bot count.\nControls: P1 Arrows, P2 A/D, P3 J/L, P4 F/H.";
+      this.hint.textContent = "Press 1-4 to choose humans.\nPress Space to choose bots.";
       return;
     }
 
     if (this.state === GAME_STATE.MENU_BOTS) {
       const maxBots = 4 - this.menu.humans;
       this.subtitle.textContent = `Choose bots (0-${maxBots}): ${this.menu.bots}`;
-      this.hint.textContent = "Press number keys to set bot count.\nPress Space to start.";
+      this.hint.textContent = "Press number keys for bots.\nPress Space to choose mode.";
+      return;
+    }
+
+    if (this.state === GAME_STATE.MENU_MODE) {
+      this.subtitle.textContent = `Mode: ${this.menu.continuous ? "Continuous" : "Normal"}`;
+      this.hint.textContent = "Press 0 for Normal, 1 for Continuous.\nPress Space to start.";
       return;
     }
 
     if (this.state === GAME_STATE.ROUND_OVER) {
       this.subtitle.textContent = "Round Over";
-      this.hint.textContent = "Press Space to try again.";
+      this.hint.textContent = "Press Space for next round.";
+      return;
+    }
+
+    if (this.state === GAME_STATE.MATCH_OVER) {
+      const winner = this.players.find((p) => p.id === this.matchWinnerId);
+      const lines = this.players
+        .slice()
+        .sort((a, b) => b.score - a.score)
+        .map((p, index) => `${index === 0 ? "CROWN " : ""}${p.name}: ${p.score}`)
+        .join("\n");
+      this.subtitle.textContent = `Match Over - ${winner ? winner.name : "Winner"}`;
+      this.hint.textContent = `${lines}\n\nPress Space for new match.`;
     }
   }
 
-  startRound() {
-    if (!this.players.length) {
-      this.buildPlayers();
-    } else {
-      this.resetRound();
-    }
+  targetScore() {
+    return Math.max(1, (this.players.length - 1) * 10);
+  }
 
+  startMatch() {
+    this.createPlayers();
+    this.stopCelebration();
+    this.state = GAME_STATE.RUNNING;
+    this.overlay.classList.add("hidden");
+    this.clock.getDelta();
+  }
+
+  startNextRound() {
+    this.resetRound();
     this.state = GAME_STATE.RUNNING;
     this.overlay.classList.add("hidden");
     this.clock.getDelta();
@@ -524,20 +616,31 @@ class SphereSnakeGame {
 
   updateMenu() {
     if (this.state === GAME_STATE.MENU_PLAYERS) {
-      const selectedPlayers = this.readNumberKey(1, 4);
-      if (selectedPlayers !== null) {
-        this.menu.humans = selectedPlayers;
-        this.menu.bots = Math.min(this.menu.bots, 4 - selectedPlayers);
-        this.syncMenuOverlay();
+      const selected = this.readNumberKey(1, 4);
+      if (selected !== null) {
+        this.menu.humans = selected;
+        this.menu.bots = Math.min(this.menu.bots, 4 - selected);
+        this.syncOverlay();
       }
     }
 
     if (this.state === GAME_STATE.MENU_BOTS) {
       const maxBots = 4 - this.menu.humans;
-      const selectedBots = this.readNumberKey(0, maxBots);
-      if (selectedBots !== null) {
-        this.menu.bots = selectedBots;
-        this.syncMenuOverlay();
+      const selected = this.readNumberKey(0, maxBots);
+      if (selected !== null) {
+        this.menu.bots = selected;
+        this.syncOverlay();
+      }
+    }
+
+    if (this.state === GAME_STATE.MENU_MODE) {
+      if (this.input.consumePress("Digit0") || this.input.consumePress("Numpad0")) {
+        this.menu.continuous = false;
+        this.syncOverlay();
+      }
+      if (this.input.consumePress("Digit1") || this.input.consumePress("Numpad1")) {
+        this.menu.continuous = true;
+        this.syncOverlay();
       }
     }
 
@@ -547,23 +650,36 @@ class SphereSnakeGame {
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
       this.state = GAME_STATE.MENU_BOTS;
-      this.syncMenuOverlay();
+      this.syncOverlay();
       return;
     }
 
     if (this.state === GAME_STATE.MENU_BOTS) {
-      this.buildPlayers();
-      this.startRound();
+      this.state = GAME_STATE.MENU_MODE;
+      this.syncOverlay();
+      return;
+    }
+
+    if (this.state === GAME_STATE.MENU_MODE) {
+      this.startMatch();
       return;
     }
 
     if (this.state === GAME_STATE.ROUND_OVER) {
-      this.startRound();
+      this.startNextRound();
+      return;
+    }
+
+    if (this.state === GAME_STATE.MATCH_OVER) {
+      this.matchWinnerId = null;
+      this.stopCelebration();
+      this.state = GAME_STATE.MENU_PLAYERS;
+      this.syncOverlay();
     }
   }
 
   readNumberKey(min, max) {
-    const map = [
+    const keyMap = [
       ["Digit0", 0],
       ["Digit1", 1],
       ["Digit2", 2],
@@ -576,7 +692,7 @@ class SphereSnakeGame {
       ["Numpad4", 4],
     ];
 
-    for (const [code, value] of map) {
+    for (const [code, value] of keyMap) {
       if (value >= min && value <= max && this.input.consumePress(code)) {
         return value;
       }
@@ -586,11 +702,14 @@ class SphereSnakeGame {
   }
 
   updateRunning(dt) {
-    for (const player of this.players) {
+    this.updateRespawningPlayers(dt);
+
+    const activePlayers = this.players.filter((p) => p.status === PLAYER_STATUS.ACTIVE);
+
+    for (const player of activePlayers) {
       if (!player.isBot) {
         const left = this.input.isDown(player.control.left);
         const right = this.input.isDown(player.control.right);
-
         if (left && !right) {
           player.turnInput = 1;
         } else if (right && !left) {
@@ -601,15 +720,15 @@ class SphereSnakeGame {
       }
     }
 
-    const predictedHeads = this.predictHeads();
+    const predictedHeads = this.predictHeads(activePlayers);
 
-    for (const player of this.players) {
+    for (const player of activePlayers) {
       if (player.isBot) {
         player.turnInput = this.botBrain.decide(player, this.players, predictedHeads);
       }
     }
 
-    for (const player of this.players) {
+    for (const player of activePlayers) {
       advanceOnSphere(
         player,
         player.turnInput,
@@ -623,29 +742,90 @@ class SphereSnakeGame {
       player.trail.addPoint(player.pos, dt);
     }
 
-    let crashed = false;
-    for (const player of this.players) {
-      if (hitsAnyTrail(player.pos, this.players, this.config, player.id, true)) {
-        crashed = true;
-        break;
+    const crashed = [];
+    for (const player of activePlayers) {
+      if (hitsAnyTrail(player.pos, this.players, this.config, player, true)) {
+        crashed.push(player);
       }
     }
 
-    if (crashed) {
-      this.state = GAME_STATE.ROUND_OVER;
-      this.syncMenuOverlay();
+    for (const player of crashed) {
+      if (player.status !== PLAYER_STATUS.ACTIVE) {
+        continue;
+      }
+      this.handleCrash(player);
+    }
+
+    for (const player of this.players) {
+      if (player.status === PLAYER_STATUS.ACTIVE) {
+        this.updateCamera(player);
+      }
+    }
+
+    this.updateViewportLabels();
+  }
+
+  handleCrash(player) {
+    const survivors = this.players.filter((p) => p.status === PLAYER_STATUS.ACTIVE && p.id !== player.id);
+    for (const survivor of survivors) {
+      survivor.score += this.config.scorePerHit;
+    }
+
+    if (this.menu.continuous) {
+      this.beginFadeRespawn(player);
+      this.updateViewportLabels();
+      const winner = this.players.find((p) => p.score >= this.targetScore());
+      if (winner) {
+        this.endMatch(winner);
+      }
       return;
     }
 
-    for (const player of this.players) {
-      this.updateCamera(player);
+    player.status = PLAYER_STATUS.OUT;
+    player.headMesh.visible = false;
+    player.turnInput = 0;
+
+    const activeLeft = this.players.filter((p) => p.status === PLAYER_STATUS.ACTIVE).length;
+    if (activeLeft <= 1) {
+      const winner = this.players.find((p) => p.score >= this.targetScore());
+      if (winner) {
+        this.endMatch(winner);
+      } else {
+        this.state = GAME_STATE.ROUND_OVER;
+        this.syncOverlay();
+      }
     }
   }
 
-  predictHeads() {
+  beginFadeRespawn(player) {
+    player.status = PLAYER_STATUS.RESPAWNING;
+    player.respawnTimer = this.config.fadeDuration;
+    player.trailCollidable = false;
+    player.headMesh.visible = false;
+    player.turnInput = 0;
+  }
+
+  updateRespawningPlayers(dt) {
+    for (const player of this.players) {
+      if (player.status !== PLAYER_STATUS.RESPAWNING) {
+        continue;
+      }
+
+      player.respawnTimer -= dt;
+      const progress = 1 - Math.max(0, player.respawnTimer) / this.config.fadeDuration;
+      player.trail.setFade(progress);
+
+      if (player.respawnTimer <= 0) {
+        player.trail.reset();
+        this.spawnPlayer(player);
+      }
+    }
+  }
+
+  predictHeads(activePlayers) {
     const predicted = new Map();
 
-    for (const player of this.players) {
+    for (const player of activePlayers) {
       const sim = {
         pos: player.pos.clone(),
         up: player.up.clone(),
@@ -653,38 +833,120 @@ class SphereSnakeGame {
         right: player.right.clone(),
       };
 
-      const list = [];
-      const turn = player.turnInput;
+      const points = [];
       for (let i = 0; i < this.config.botSimSteps; i += 1) {
         advanceOnSphere(
           sim,
-          turn,
+          player.turnInput,
           this.config.botSimDt,
           this.config.turnRate,
           this.config.speed,
           this.config.worldRadius,
           this.config.headRadius,
         );
-        list.push(sim.pos.clone());
+        points.push(sim.pos.clone());
       }
-      predicted.set(player.id, list);
+
+      predicted.set(player.id, points);
     }
 
     return predicted;
+  }
+
+  endMatch(winner) {
+    this.matchWinnerId = winner.id;
+    this.state = GAME_STATE.MATCH_OVER;
+    this.startCelebration(winner);
+    this.syncOverlay();
+  }
+
+  startCelebration(winner) {
+    this.celebrationGroup.visible = true;
+    this.celebration = {
+      center: winner.pos.clone(),
+      time: 0,
+    };
+    this.spectatorCenter.copy(winner.pos);
+
+    this.crownGroup.position.copy(winner.pos).addScaledVector(winner.up, 1.9);
+
+    for (const spark of this.sparkPool) {
+      const dir = new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.1) * 2,
+        (Math.random() - 0.5) * 2,
+      ).normalize();
+
+      spark.mesh.visible = true;
+      spark.mesh.position.copy(this.celebration.center).addScaledVector(dir, Math.random() * 1.2);
+      spark.velocity.copy(dir.multiplyScalar(8 + Math.random() * 8));
+      spark.life = 0;
+      spark.maxLife = 1.2 + Math.random() * 1.6;
+      spark.mesh.material.opacity = 1;
+    }
+  }
+
+  stopCelebration() {
+    this.celebrationGroup.visible = false;
+    this.celebration = null;
+    for (const spark of this.sparkPool) {
+      spark.mesh.visible = false;
+    }
+  }
+
+  updateCelebration(dt) {
+    if (!this.celebration) {
+      return;
+    }
+
+    this.celebration.time += dt;
+    const t = this.celebration.time;
+
+    this.crownGroup.position.y = this.celebration.center.y + 2 + Math.sin(t * 3.2) * 0.4;
+    this.crownGroup.rotation.y += dt * 1.2;
+
+    for (const spark of this.sparkPool) {
+      spark.life += dt;
+      if (spark.life >= spark.maxLife) {
+        const dir = new THREE.Vector3(
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.2) * 2,
+          (Math.random() - 0.5) * 2,
+        ).normalize();
+        spark.mesh.position.copy(this.celebration.center).addScaledVector(dir, Math.random() * 0.8);
+        spark.velocity.copy(dir.multiplyScalar(7 + Math.random() * 10));
+        spark.life = 0;
+        spark.maxLife = 1 + Math.random() * 1.8;
+        spark.mesh.material.opacity = 1;
+      }
+
+      spark.velocity.y -= dt * 4.5;
+      spark.mesh.position.addScaledVector(spark.velocity, dt);
+      spark.mesh.material.opacity = Math.max(0, 1 - spark.life / spark.maxLife);
+    }
+
+    const orbitRadius = 14;
+    const orbitHeight = 7.5;
+    const orbitSpeed = 0.45;
+    this.spectatorCamera.position.set(
+      this.celebration.center.x + Math.cos(t * orbitSpeed) * orbitRadius,
+      this.celebration.center.y + orbitHeight,
+      this.celebration.center.z + Math.sin(t * orbitSpeed) * orbitRadius,
+    );
+    this.spectatorCamera.lookAt(this.celebration.center);
   }
 
   updateCamera(player) {
     const back = player.forward.clone().multiplyScalar(-this.config.cameraDistance);
     const up = player.up.clone().multiplyScalar(this.config.cameraHeight);
     const desired = player.pos.clone().add(back).add(up);
-    const target = player.pos.clone().addScaledVector(player.forward, this.config.cameraLookAhead);
     player.camera.position.copy(desired);
-    player.camera.lookAt(target);
+    player.camera.lookAt(player.pos);
   }
 
   getViewports() {
     const n = this.players.length;
-    if (n === 1) {
+    if (n <= 1) {
       return [{ x: 0, y: 0, w: 1, h: 1 }];
     }
     if (n === 2) {
@@ -706,12 +968,34 @@ class SphereSnakeGame {
     this.viewportLabels.innerHTML = "";
 
     for (const player of this.players) {
-      const label = document.createElement("div");
-      label.className = "viewport-label";
-      label.style.borderColor = `#${player.color.toString(16).padStart(6, "0")}`;
-      label.textContent = player.isBot ? `${player.name} BOT` : player.name;
-      this.viewportLabels.appendChild(label);
-      player.labelEl = label;
+      const el = document.createElement("div");
+      el.className = "viewport-label";
+      el.style.borderColor = `#${player.color.toString(16).padStart(6, "0")}`;
+      this.viewportLabels.appendChild(el);
+      player.labelEl = el;
+    }
+
+    this.updateViewportLabels();
+  }
+
+  updateViewportLabels() {
+    for (const player of this.players) {
+      if (!player.labelEl) {
+        continue;
+      }
+
+      const parts = [player.name];
+      if (player.isBot) {
+        parts.push("BOT");
+      }
+      if (player.status === PLAYER_STATUS.OUT) {
+        parts.push("OUT");
+      }
+      if (player.status === PLAYER_STATUS.RESPAWNING) {
+        parts.push("RESPAWN");
+      }
+      parts.push(`S:${player.score}`);
+      player.labelEl.textContent = parts.join(" ");
     }
   }
 
@@ -723,12 +1007,24 @@ class SphereSnakeGame {
     this.renderer.setScissorTest(false);
     this.renderer.clear();
 
+    if (this.state === GAME_STATE.MATCH_OVER) {
+      this.viewportLabels.style.display = "none";
+      this.renderer.render(this.scene, this.spectatorCamera);
+      return;
+    }
+
+    this.viewportLabels.style.display = this.state === GAME_STATE.RUNNING || this.state === GAME_STATE.ROUND_OVER ? "block" : "none";
+
     const viewports = this.getViewports();
     this.renderer.setScissorTest(true);
 
     for (let i = 0; i < this.players.length; i += 1) {
       const player = this.players[i];
       const v = viewports[i];
+      if (!v) {
+        continue;
+      }
+
       const vx = Math.floor(v.x * width);
       const vy = Math.floor(v.y * height);
       const vw = Math.floor(v.w * width);
@@ -752,6 +1048,8 @@ class SphereSnakeGame {
 
   onResize() {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.spectatorCamera.aspect = window.innerWidth / window.innerHeight;
+    this.spectatorCamera.updateProjectionMatrix();
   }
 
   run = () => {
@@ -759,6 +1057,9 @@ class SphereSnakeGame {
 
     if (this.state === GAME_STATE.RUNNING) {
       this.updateRunning(dt);
+    } else if (this.state === GAME_STATE.MATCH_OVER) {
+      this.updateCelebration(dt);
+      this.updateMenu();
     } else {
       this.updateMenu();
     }
