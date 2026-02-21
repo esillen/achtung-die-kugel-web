@@ -4,6 +4,7 @@ const GAME_STATE = {
   MENU_PLAYERS: "menu_players",
   MENU_BOTS: "menu_bots",
   MENU_MODE: "menu_mode",
+  MENU_JUMP: "menu_jump",
   RUNNING: "running",
   ROUND_OVER: "round_over",
   MATCH_OVER: "match_over",
@@ -17,16 +18,21 @@ const PLAYER_STATUS = {
 
 const PLAYER_COLORS = [0xff3b30, 0x34c759, 0x0a84ff, 0xffd60a];
 const CONTROL_SCHEMES = [
-  { label: "P1", left: "ArrowLeft", right: "ArrowRight" },
-  { label: "P2", left: "KeyA", right: "KeyD" },
-  { label: "P3", left: "KeyJ", right: "KeyL" },
-  { label: "P4", left: "KeyF", right: "KeyH" },
+  { label: "P1", left: "ArrowLeft", right: "ArrowRight", dash: "ArrowUp" },
+  { label: "P2", left: "KeyA", right: "KeyD", dash: "KeyW" },
+  { label: "P3", left: "KeyJ", right: "KeyL", dash: "KeyI" },
+  { label: "P4", left: "KeyF", right: "KeyH", dash: "KeyT" },
 ];
+const GAMEPAD_LEFT_TRIGGER = 6;
+const GAMEPAD_RIGHT_TRIGGER = 7;
+const GAMEPAD_A_BUTTON = 0;
+const GAMEPAD_PRESS_THRESHOLD = 0.5;
 
 class InputManager {
   constructor() {
     this.down = new Set();
     this.justPressed = new Set();
+    this.gamepadPrevButtonValues = new Map();
 
     window.addEventListener("keydown", (event) => {
       if (!this.down.has(event.code)) {
@@ -60,6 +66,8 @@ class InputManager {
     window.addEventListener("keyup", (event) => {
       this.down.delete(event.code);
     });
+
+    this.snapshotGamepadButtons();
   }
 
   isDown(code) {
@@ -74,8 +82,64 @@ class InputManager {
     return false;
   }
 
+  getGamepad(index) {
+    if (!navigator.getGamepads) {
+      return null;
+    }
+    const pads = navigator.getGamepads();
+    if (!pads || !pads[index]) {
+      return null;
+    }
+    return pads[index];
+  }
+
+  getGamepadButtonValue(gamepadIndex, buttonIndex) {
+    const gamepad = this.getGamepad(gamepadIndex);
+    if (!gamepad || !gamepad.buttons || !gamepad.buttons[buttonIndex]) {
+      return 0;
+    }
+    return THREE.MathUtils.clamp(gamepad.buttons[buttonIndex].value ?? 0, 0, 1);
+  }
+
+  getGamepadTurn(gamepadIndex) {
+    const left = this.getGamepadButtonValue(gamepadIndex, GAMEPAD_LEFT_TRIGGER);
+    const right = this.getGamepadButtonValue(gamepadIndex, GAMEPAD_RIGHT_TRIGGER);
+    return THREE.MathUtils.clamp(left - right, -1, 1);
+  }
+
+  consumeGamepadButtonPress(gamepadIndex, buttonIndex, threshold = GAMEPAD_PRESS_THRESHOLD) {
+    const key = `${gamepadIndex}:${buttonIndex}`;
+    const current = this.getGamepadButtonValue(gamepadIndex, buttonIndex);
+    const prev = this.gamepadPrevButtonValues.get(key) ?? 0;
+    return current >= threshold && prev < threshold;
+  }
+
+  snapshotGamepadButtons() {
+    this.gamepadPrevButtonValues.clear();
+    if (!navigator.getGamepads) {
+      return;
+    }
+
+    const pads = navigator.getGamepads();
+    if (!pads) {
+      return;
+    }
+
+    for (let gamepadIndex = 0; gamepadIndex < pads.length; gamepadIndex += 1) {
+      const pad = pads[gamepadIndex];
+      if (!pad || !pad.buttons) {
+        continue;
+      }
+      for (let buttonIndex = 0; buttonIndex < pad.buttons.length; buttonIndex += 1) {
+        const value = THREE.MathUtils.clamp(pad.buttons[buttonIndex]?.value ?? 0, 0, 1);
+        this.gamepadPrevButtonValues.set(`${gamepadIndex}:${buttonIndex}`, value);
+      }
+    }
+  }
+
   endFrame() {
     this.justPressed.clear();
+    this.snapshotGamepadButtons();
   }
 }
 
@@ -210,6 +274,16 @@ class SnakeTrail {
 
   show() {
     this.root.visible = true;
+  }
+
+  forceGap(duration, referencePoint) {
+    this.inGap = true;
+    this.gapRemaining = Math.max(this.gapRemaining, duration);
+    this.currentMesh = null;
+    this.currentPoints.length = 0;
+    if (referencePoint) {
+      this.lastPlacedPoint = referencePoint.clone();
+    }
   }
 
   dispose() {
@@ -382,12 +456,17 @@ class SphereSnakeGame {
       botSimDt: 0.12,
       fadeDuration: 2,
       scorePerHit: 1,
+      dashCooldown: 5,
+      dashDistance: 5.4,
+      dashGapDuration: 0.34,
+      dashScreenFlash: 0.16,
     };
 
     this.menu = {
       humans: 2,
       bots: 0,
       continuous: false,
+      jumpMode: false,
     };
 
     this.state = GAME_STATE.MENU_PLAYERS;
@@ -398,6 +477,7 @@ class SphereSnakeGame {
 
     this.initWorld();
     this.initCelebrationSystem();
+    this.initDashEffects();
     this.syncOverlay();
 
     window.addEventListener("resize", () => this.onResize());
@@ -463,6 +543,19 @@ class SphereSnakeGame {
     this.celebrationGroup.visible = false;
   }
 
+  initDashEffects() {
+    this.dashEffectPool = [];
+    for (let i = 0; i < 80; i += 1) {
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.06, 1.3, 6),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }),
+      );
+      mesh.visible = false;
+      this.scene.add(mesh);
+      this.dashEffectPool.push({ mesh, velocity: new THREE.Vector3(), life: 0, maxLife: 0 });
+    }
+  }
+
   createPlayers() {
     for (const player of this.players) {
       player.trail.dispose();
@@ -501,6 +594,9 @@ class SphereSnakeGame {
         status: PLAYER_STATUS.ACTIVE,
         respawnTimer: 0,
         turnInput: 0,
+        dashCooldown: this.config.dashCooldown,
+        dashRequested: false,
+        dashFlashTimer: 0,
         pos: new THREE.Vector3(),
         up: new THREE.Vector3(),
         forward: new THREE.Vector3(),
@@ -539,6 +635,9 @@ class SphereSnakeGame {
     player.status = PLAYER_STATUS.ACTIVE;
     player.respawnTimer = 0;
     player.turnInput = 0;
+    player.dashCooldown = this.config.dashCooldown;
+    player.dashRequested = false;
+    player.dashFlashTimer = 0;
     this.updateCamera(player);
   }
 
@@ -557,23 +656,31 @@ class SphereSnakeGame {
 
   syncOverlay() {
     this.overlay.classList.remove("hidden");
+    const controls = this.getTitleControlsText();
 
     if (this.state === GAME_STATE.MENU_PLAYERS) {
       this.subtitle.textContent = `Choose human players (1-4): ${this.menu.humans}`;
-      this.hint.textContent = "Press 1-4 to choose humans.\nPress Space to choose bots.";
+      this.hint.textContent = `Press 1-4 to choose humans.\nPress Space to choose bots.\n\n${controls}`;
       return;
     }
 
     if (this.state === GAME_STATE.MENU_BOTS) {
       const maxBots = 4 - this.menu.humans;
       this.subtitle.textContent = `Choose bots (0-${maxBots}): ${this.menu.bots}`;
-      this.hint.textContent = "Press number keys for bots.\nPress Space to choose mode.";
+      this.hint.textContent = `Press number keys for bots.\nPress Space to choose mode.\n\n${controls}`;
       return;
     }
 
     if (this.state === GAME_STATE.MENU_MODE) {
       this.subtitle.textContent = `Mode: ${this.menu.continuous ? "Continuous" : "Normal"}`;
-      this.hint.textContent = "Press 0 for Normal, 1 for Continuous.\nPress Space to start.";
+      this.hint.textContent = `Press 0 for Normal, 1 for Continuous.\nPress Space to choose jump mode.\n\n${controls}`;
+      return;
+    }
+
+    if (this.state === GAME_STATE.MENU_JUMP) {
+      this.subtitle.textContent = `Jump Mode: ${this.menu.jumpMode ? "On" : "Off"}`;
+      this.hint.textContent =
+        `Press 0 for no jump mode, 1 for jump mode.\nPress Space to start.\nDash keys: P1 UpArrow, P2 W, P3 I, P4 T.\n\n${controls}`;
       return;
     }
 
@@ -593,6 +700,38 @@ class SphereSnakeGame {
       this.subtitle.textContent = `Match Over - ${winner ? winner.name : "Winner"}`;
       this.hint.textContent = `${lines}\n\nPress Space for new match.`;
     }
+  }
+
+  getTitleControlsText() {
+    const humanCount = THREE.MathUtils.clamp(this.menu.humans, 1, CONTROL_SCHEMES.length);
+    const lines = [];
+    for (let i = 0; i < humanCount; i += 1) {
+      const control = CONTROL_SCHEMES[i];
+      lines.push(
+        `${control.label}: Keyboard ${this.codeLabel(control.left)}/${this.codeLabel(control.right)} steer, ${this.codeLabel(control.dash)} jump | Gamepad ${
+          i + 1
+        }: LT/RT steer (analog), A jump`,
+      );
+    }
+    return lines.join("\n");
+  }
+
+  codeLabel(code) {
+    const map = {
+      ArrowLeft: "Left",
+      ArrowRight: "Right",
+      ArrowUp: "Up",
+      KeyA: "A",
+      KeyD: "D",
+      KeyW: "W",
+      KeyJ: "J",
+      KeyL: "L",
+      KeyI: "I",
+      KeyF: "F",
+      KeyH: "H",
+      KeyT: "T",
+    };
+    return map[code] || code;
   }
 
   targetScore() {
@@ -644,6 +783,17 @@ class SphereSnakeGame {
       }
     }
 
+    if (this.state === GAME_STATE.MENU_JUMP) {
+      if (this.input.consumePress("Digit0") || this.input.consumePress("Numpad0")) {
+        this.menu.jumpMode = false;
+        this.syncOverlay();
+      }
+      if (this.input.consumePress("Digit1") || this.input.consumePress("Numpad1")) {
+        this.menu.jumpMode = true;
+        this.syncOverlay();
+      }
+    }
+
     if (!this.input.consumePress("Space")) {
       return;
     }
@@ -661,6 +811,12 @@ class SphereSnakeGame {
     }
 
     if (this.state === GAME_STATE.MENU_MODE) {
+      this.state = GAME_STATE.MENU_JUMP;
+      this.syncOverlay();
+      return;
+    }
+
+    if (this.state === GAME_STATE.MENU_JUMP) {
       this.startMatch();
       return;
     }
@@ -703,19 +859,29 @@ class SphereSnakeGame {
 
   updateRunning(dt) {
     this.updateRespawningPlayers(dt);
+    this.updateDashEffects(dt);
+
+    for (const player of this.players) {
+      player.dashFlashTimer = Math.max(0, player.dashFlashTimer - dt);
+    }
 
     const activePlayers = this.players.filter((p) => p.status === PLAYER_STATUS.ACTIVE);
 
     for (const player of activePlayers) {
+      player.dashCooldown = Math.max(0, player.dashCooldown - dt);
+      player.dashRequested = false;
+
       if (!player.isBot) {
         const left = this.input.isDown(player.control.left);
         const right = this.input.isDown(player.control.right);
-        if (left && !right) {
-          player.turnInput = 1;
-        } else if (right && !left) {
-          player.turnInput = -1;
-        } else {
-          player.turnInput = 0;
+        const keyboardTurn = left && !right ? 1 : right && !left ? -1 : 0;
+        const gamepadTurn = this.input.getGamepadTurn(player.id);
+        player.turnInput = THREE.MathUtils.clamp(keyboardTurn + gamepadTurn, -1, 1);
+
+        const gamepadJumpPressed = this.input.consumeGamepadButtonPress(player.id, GAMEPAD_A_BUTTON);
+        const keyboardJumpPressed = this.input.consumePress(player.control.dash);
+        if (this.menu.jumpMode && (keyboardJumpPressed || gamepadJumpPressed)) {
+          player.dashRequested = true;
         }
       }
     }
@@ -725,6 +891,9 @@ class SphereSnakeGame {
     for (const player of activePlayers) {
       if (player.isBot) {
         player.turnInput = this.botBrain.decide(player, this.players, predictedHeads);
+        if (this.menu.jumpMode && player.dashCooldown <= 0 && this.shouldBotDash(player)) {
+          player.dashRequested = true;
+        }
       }
     }
 
@@ -740,6 +909,10 @@ class SphereSnakeGame {
       );
       player.headMesh.position.copy(player.pos);
       player.trail.addPoint(player.pos, dt);
+
+      if (this.menu.jumpMode && player.dashRequested && player.dashCooldown <= 0) {
+        this.performDash(player);
+      }
     }
 
     const crashed = [];
@@ -763,6 +936,75 @@ class SphereSnakeGame {
     }
 
     this.updateViewportLabels();
+  }
+
+  shouldBotDash(player) {
+    const checkState = {
+      pos: player.pos.clone(),
+      up: player.up.clone(),
+      forward: player.forward.clone(),
+      right: player.right.clone(),
+    };
+
+    let dangerSoon = false;
+    for (let i = 0; i < 8; i += 1) {
+      advanceOnSphere(
+        checkState,
+        player.turnInput,
+        0.08,
+        this.config.turnRate,
+        this.config.speed,
+        this.config.worldRadius,
+        this.config.headRadius,
+      );
+      if (hitsAnyTrail(checkState.pos, this.players, this.config, player, true)) {
+        dangerSoon = true;
+        break;
+      }
+    }
+
+    if (!dangerSoon) {
+      return false;
+    }
+
+    const dashState = {
+      pos: player.pos.clone(),
+      up: player.up.clone(),
+      forward: player.forward.clone(),
+      right: player.right.clone(),
+    };
+
+    advanceOnSphere(
+      dashState,
+      player.turnInput,
+      this.config.dashDistance / this.config.speed,
+      this.config.turnRate,
+      this.config.speed,
+      this.config.worldRadius,
+      this.config.headRadius,
+    );
+
+    return !hitsAnyTrail(dashState.pos, this.players, this.config, player, true);
+  }
+
+  performDash(player) {
+    const dashDt = this.config.dashDistance / this.config.speed;
+    advanceOnSphere(
+      player,
+      player.turnInput,
+      dashDt,
+      this.config.turnRate,
+      this.config.speed,
+      this.config.worldRadius,
+      this.config.headRadius,
+    );
+
+    player.headMesh.position.copy(player.pos);
+    player.trail.forceGap(this.config.dashGapDuration, player.pos);
+    player.dashCooldown = this.config.dashCooldown;
+    player.dashFlashTimer = this.config.dashScreenFlash;
+
+    this.spawnDashBurst(player);
   }
 
   handleCrash(player) {
@@ -819,6 +1061,52 @@ class SphereSnakeGame {
         player.trail.reset();
         this.spawnPlayer(player);
       }
+    }
+  }
+
+  spawnDashBurst(player) {
+    const origin = player.pos.clone().addScaledVector(player.forward, -0.6);
+    const back = player.forward.clone().multiplyScalar(-1);
+    const up = player.up.clone();
+    const right = player.right.clone();
+
+    for (let i = 0; i < 12; i += 1) {
+      const fx = this.dashEffectPool.find((entry) => entry.life >= entry.maxLife || !entry.mesh.visible);
+      if (!fx) {
+        break;
+      }
+
+      const spreadA = (Math.random() - 0.5) * 0.7;
+      const spreadB = (Math.random() - 0.5) * 0.7;
+      const dir = back
+        .clone()
+        .addScaledVector(right, spreadA)
+        .addScaledVector(up, spreadB)
+        .normalize();
+
+      fx.mesh.visible = true;
+      fx.mesh.position.copy(origin).addScaledVector(dir, Math.random() * 0.6);
+      fx.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      fx.velocity.copy(dir.multiplyScalar(18 + Math.random() * 9));
+      fx.life = 0;
+      fx.maxLife = 0.14 + Math.random() * 0.12;
+      fx.mesh.material.opacity = 0.95;
+      fx.mesh.scale.set(1, 0.6 + Math.random() * 0.8, 1);
+    }
+  }
+
+  updateDashEffects(dt) {
+    for (const fx of this.dashEffectPool) {
+      if (!fx.mesh.visible) {
+        continue;
+      }
+      fx.life += dt;
+      if (fx.life >= fx.maxLife) {
+        fx.mesh.visible = false;
+        continue;
+      }
+      fx.mesh.position.addScaledVector(fx.velocity, dt);
+      fx.mesh.material.opacity = 1 - fx.life / fx.maxLife;
     }
   }
 
@@ -973,6 +1261,11 @@ class SphereSnakeGame {
       el.style.borderColor = `#${player.color.toString(16).padStart(6, "0")}`;
       this.viewportLabels.appendChild(el);
       player.labelEl = el;
+
+      const dashFlashEl = document.createElement("div");
+      dashFlashEl.className = "dash-flash";
+      this.viewportLabels.appendChild(dashFlashEl);
+      player.dashFlashEl = dashFlashEl;
     }
 
     this.updateViewportLabels();
@@ -995,6 +1288,9 @@ class SphereSnakeGame {
         parts.push("RESPAWN");
       }
       parts.push(`S:${player.score}`);
+      if (this.menu.jumpMode && player.status === PLAYER_STATUS.ACTIVE) {
+        parts.push(`D:${player.dashCooldown <= 0 ? "READY" : player.dashCooldown.toFixed(1)}`);
+      }
       player.labelEl.textContent = parts.join(" ");
     }
   }
@@ -1040,6 +1336,15 @@ class SphereSnakeGame {
       if (player.labelEl) {
         player.labelEl.style.left = `${vx + 8}px`;
         player.labelEl.style.top = `${height - vy - vh + 8}px`;
+      }
+
+      if (player.dashFlashEl) {
+        const opacity = this.menu.jumpMode ? Math.max(0, player.dashFlashTimer / this.config.dashScreenFlash) : 0;
+        player.dashFlashEl.style.left = `${vx + 3}px`;
+        player.dashFlashEl.style.top = `${height - vy - vh + 3}px`;
+        player.dashFlashEl.style.width = `${Math.max(0, vw - 6)}px`;
+        player.dashFlashEl.style.height = `${Math.max(0, vh - 6)}px`;
+        player.dashFlashEl.style.opacity = opacity.toFixed(3);
       }
     }
 
